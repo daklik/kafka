@@ -68,6 +68,41 @@ Transformation and branching primitives mirror the Java DSL:
 - `start()` / `stop()`
 - Access to state stores registered via aggregations
 - Emits `started`, `stopped`, and `error` events
+- Interactive query surface via `store()`/`metadataForStore()` and the `InteractiveQueryService`
+
+### Interactive Queries
+
+Phase 1 now exposes the foundations for Java-style interactive queries. Configure an application server endpoint and optionally
+an RPC client to route remote lookups:
+
+```js
+const { KafkaStreams, StreamsBuilder, Serde, query } = require('kafka-streams-node');
+
+const builder = new StreamsBuilder();
+builder
+  .stream('input', { keySerde: Serde.string(), valueSerde: Serde.json() })
+  .groupBy(value => value.category)
+  .count({ storeName: 'category-counts' });
+
+const rpcClient = new class extends query.QueryRpcClient {
+  async fetchKeyValue({ hostInfo, storeName, key }) {
+    // invoke your HTTP/gRPC endpoint here
+    return fetch(`http://${hostInfo.host}:${hostInfo.port}/stores/${storeName}/${key}`).then(res => res.json());
+  }
+}();
+
+const streams = new KafkaStreams(builder, {
+  applicationId: 'interactive-app',
+  applicationServer: { host: 'app-host', port: 8080 },
+  interactiveQueries: { rpcClient }
+});
+
+const queryService = streams.getInteractiveQueryService();
+const localStore = queryService.store('category-counts');
+```
+
+Metadata for registered stores is available via `metadataForStore(storeName)` mirroring Java's `KafkaStreams#metadataForLocalSto
+res`.
 
 ### Serdes
 
@@ -158,6 +193,9 @@ const kafkaStreams = new KafkaStreams(builder, {
 npm install
 npm test
 ```
+
+The test suite now includes a compatibility harness (`node/test/compatibility-harness.test.js`) that executes shared fixtures ag
+ainst the Node.js runtime and validates parity with Java word-count expectations.
 
 ## Documentation
 

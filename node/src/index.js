@@ -10,6 +10,7 @@ const { Materialized } = require('./materialized');
 const { StreamsConfig } = require('./config/streams-config');
 const metrics = require('./metrics');
 const errors = require('./errors');
+const query = require('./query');
 
 module.exports = {
   StreamsBuilder,
@@ -21,5 +22,6 @@ module.exports = {
   StreamsConfig,
   metrics,
   errors,
+  query,
   ...state
 };

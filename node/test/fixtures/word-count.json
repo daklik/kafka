@@ -1,0 +1,16 @@
+{
+  "description": "Word count results captured from Kafka Streams Java unit tests",
+  "inputTopic": "wc-input",
+  "records": [
+    { "key": "k1", "value": "hello world" },
+    { "key": "k2", "value": "hello kafka streams" },
+    { "key": "k3", "value": "kafka node" }
+  ],
+  "expected": [
+    { "key": "hello", "value": 2 },
+    { "key": "world", "value": 1 },
+    { "key": "kafka", "value": 2 },
+    { "key": "streams", "value": 1 },
+    { "key": "node", "value": 1 }
+  ]
+}

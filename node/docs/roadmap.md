@@ -15,7 +15,7 @@
 3. **State & Query Capabilities**: Review state store abstractions (`KeyValueStore`, `WindowStore`, `SessionStore`) and interactive query APIs in `streams/state` and `streams/query`.
 4. **Cross-Cutting Concerns**: Inventory configuration options, metrics reporters, and error handling paths defined under `streams/internals` and `streams/errors`.
 
-_Deliverable_: Gap analysis report with prioritized backlog mapped to Node.js modules (see [Phase 1 Gap Analysis](phase1-gap-analysis.md)).
+_Deliverable_: Gap analysis report with prioritized backlog mapped to Node.js modules (see [Phase 1 Gap Analysis](phase1-gap-analysis.md)). **Status: Completed – includes interactive query metadata scaffolding and cross-language compatibility harness.**
 
 ## Phase 2 – DSL Parity
 1. **KStream Operations**: Implement missing transformations (flatMap, branch, repartition, joins, windowed aggregations) guided by `kstream/KStream.java` and `kstream/internals` implementations.

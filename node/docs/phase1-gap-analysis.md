@@ -43,8 +43,8 @@ This document records the findings of Phase 1 of the roadmap outlined in `node/d
 | P1 | `src/config/streams-config.js` (new) | Configuration system | **Completed** – introduced `StreamsConfig` with derived IDs, EOS validation, and consumer/producer factories. |
 | P1 | `src/metrics` (new) | Metrics framework | **Completed** – delivered `StreamsMetrics` registry, reporters, and runtime instrumentation for consumption/production/error counters. |
 | P1 | `src/errors` (new) | Error handling | **Completed** – added Java-style exception handler interfaces wired into deserialization and production paths. |
-| P2 | `src/query` (new) | Interactive queries | Metadata state tracking, RPC interfaces, query routing stubs. |
-| P2 | `test/` | Compatibility harness | Shared fixtures replicating Java DSL and runtime semantics across languages. |
+| P2 | `src/query` (new) | Interactive queries | **Completed** – metadata manager, host info registry, interactive query service, and RPC client stubs wired through `KafkaStreams`. |
+| P2 | `test/` | Compatibility harness | **Completed** – cross-language fixture harness with word-count regression referencing Java outputs. |
 
 ### Notes on Prioritization
 - **P0** items unblock Phase 2 (DSL parity) and Phase 3 (processor API) by ensuring the foundation mirrors Java constructs.
@@ -52,6 +52,6 @@ This document records the findings of Phase 1 of the roadmap outlined in `node/d
 - **P2** items can begin after foundational runtime pieces exist but should be planned early to avoid architectural rework.
 
 ## 6. Next Steps
-1. Extend metrics coverage to state store operations and task lifecycle events, aligning naming with `StreamsMetricsImpl` for future parity.
-2. Prototype persistent store adapters and changelog topic naming conventions leveraging the new configuration scaffolding.
-3. Kick off Phase 2 DSL parity work (joins, windowing) using the hardened configuration, metrics, and handler foundations.
+1. Finalize the interactive query transport (HTTP/gRPC) contract and wire metadata refresh scheduling ahead of Phase 2 runtime work.
+2. Expand the compatibility harness with additional fixtures (joins, aggregations, branch semantics) sourced from Java integration tests.
+3. Commence Phase 2 DSL parity by porting KStream joins and window definitions using the new query/runtime foundations.

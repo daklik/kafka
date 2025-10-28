@@ -2,6 +2,7 @@
 
 const { StreamsMetrics, NoopReporter } = require('../metrics');
 const { createExceptionHandler, LogAndFailExceptionHandler } = require('../errors');
+const { HostInfo } = require('../query/host-info');
 
 const DEFAULT_PROCESSING_GUARANTEE = 'at_least_once';
 const SUPPORTED_PROCESSING_GUARANTEES = new Set([
@@ -111,6 +112,12 @@ class StreamsConfig {
 
     this.kafka = raw.kafka;
 
+    this.applicationServer = HostInfo.from(
+      raw.applicationServer ?? raw.applicationServerHostInfo ?? raw['application.server']
+    );
+    this.metadataRefreshInterval = raw.metadataRefreshInterval ?? 30000;
+    this.interactiveQueryConfig = { ...(raw.interactiveQueries ?? {}) };
+
     this.metricsRegistry = buildMetricsRegistry(raw.metrics ?? {});
     this.errorHandlers = buildErrorHandlers(raw);
   }
@@ -137,6 +144,18 @@ class StreamsConfig {
 
   getErrorHandlers() {
     return this.errorHandlers;
+  }
+
+  getApplicationServer() {
+    return this.applicationServer;
+  }
+
+  getMetadataRefreshInterval() {
+    return this.metadataRefreshInterval;
+  }
+
+  getInteractiveQueryConfig() {
+    return { ...this.interactiveQueryConfig };
   }
 
   async createConsumer({ stream, kafka, groupId }) {

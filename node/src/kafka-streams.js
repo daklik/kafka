@@ -6,6 +6,7 @@ const { StreamsBuilder } = require('./streams-builder');
 const { TaskManager } = require('./runtime/task-manager');
 const { StreamsConfig } = require('./config/streams-config');
 const { HandlerAction } = require('./errors');
+const { QueryMetadataManager, InteractiveQueryService } = require('./query');
 
 const SKIP_RECORD = Symbol.for('kafka-streams-skip-record');
 
@@ -31,6 +32,18 @@ class KafkaStreams extends EventEmitter {
     this._taskManager.registerTopology(this.topology);
     this._metrics = this.config.getMetricsRegistry();
     this._errorHandlers = this.config.getErrorHandlers();
+    const interactiveConfig = this.config.getInteractiveQueryConfig?.() ?? {};
+    this._queryMetadata = new QueryMetadataManager({
+      applicationId: this.config.applicationId,
+      hostInfo: this.config.getApplicationServer?.(),
+      rpcClient: interactiveConfig.rpcClient
+    });
+    if (interactiveConfig.rpcClient) {
+      this._queryMetadata.setRpcClient(interactiveConfig.rpcClient);
+    }
+    this._interactiveQueryService = new InteractiveQueryService({
+      metadataManager: this._queryMetadata
+    });
   }
 
   async start() {
@@ -59,8 +72,9 @@ class KafkaStreams extends EventEmitter {
     }
     await Promise.all(stops);
     for (const stores of this._stateStores.values()) {
-      for (const store of stores.values()) {
+      for (const [name, store] of stores.entries()) {
         await store.close?.().catch(err => this.emit('error', err));
+        this._queryMetadata?.deregisterStore(name);
       }
     }
 
@@ -463,8 +477,50 @@ class KafkaStreams extends EventEmitter {
         storeInstances.set(definition.name, instance);
       }
     }
-    this._stateStores.set(stream.id, storeInstances);
+    this._registerPrebuiltStateStores(stream, storeInstances);
     return storeInstances;
+  }
+
+  _registerPrebuiltStateStores(stream, storeInstances) {
+    if (!stream || !storeInstances) {
+      return;
+    }
+    this._stateStores.set(stream.id, storeInstances);
+    if (!this._queryMetadata) {
+      return;
+    }
+    const definitions = Array.isArray(stream.stateStores) ? stream.stateStores : [];
+    for (const definition of definitions) {
+      if (!definition?.name) {
+        continue;
+      }
+      const instance = storeInstances.get(definition.name);
+      if (!instance) {
+        continue;
+      }
+      this._queryMetadata.registerLocalStore({
+        storeName: definition.name,
+        store: instance,
+        stream,
+        metadata: definition.builderMetadata
+      });
+    }
+  }
+
+  store(storeName) {
+    return this._interactiveQueryService?.store(storeName) ?? null;
+  }
+
+  metadataForStore(storeName) {
+    return this._interactiveQueryService?.metadataForStore(storeName) ?? [];
+  }
+
+  getInteractiveQueryService() {
+    return this._interactiveQueryService;
+  }
+
+  registerRemoteStoreMetadata({ storeName, hostInfo, topicPartitions }) {
+    this._queryMetadata?.registerRemoteStore({ storeName, hostInfo, topicPartitions });
   }
 
   async _safeDeserialize({ stream, payload, component, buffer, serde }) {

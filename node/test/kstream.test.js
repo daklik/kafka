@@ -77,7 +77,7 @@ test('groupBy/count aggregates values into a state store and emits updates', asy
   for (const definition of stream.stateStores) {
     storeInstances.set(definition.name, await definition.builder.build({ stream }));
   }
-  kafkaStreams._stateStores.set(stream.id, storeInstances);
+  kafkaStreams._registerPrebuiltStateStores(stream, storeInstances);
 
   const firstRecord = {
     topic: 'input-topic',
@@ -194,7 +194,7 @@ test('branch operation routes records to matching downstream branches', async ()
     }
   };
 
-  kafkaStreams._stateStores.set(stream.id, new Map());
+  kafkaStreams._registerPrebuiltStateStores(stream, new Map());
 
   await kafkaStreams._processMessage(stream, alphaRecord, producer, new Map());
   await kafkaStreams._processMessage(stream, betaRecord, producer, new Map());
@@ -235,7 +235,7 @@ test('repartition creates intermediate topic and continues downstream processing
     }
   };
 
-  kafkaStreams._stateStores.set(stream.id, new Map());
+  kafkaStreams._registerPrebuiltStateStores(stream, new Map());
 
   await kafkaStreams._processMessage(stream, payload, producer, new Map());
 
