@@ -112,6 +112,11 @@ npm install
 npm test
 ```
 
+## Documentation
+
+- [Roadmap](docs/roadmap.md)
+- [Phase 1 Gap Analysis](docs/phase1-gap-analysis.md)
+
 ## License
 
 [Apache License 2.0](../LICENSE)
