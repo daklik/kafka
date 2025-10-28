@@ -52,6 +52,4 @@ This document records the findings of Phase 1 of the roadmap outlined in `node/d
 - **P2** items can begin after foundational runtime pieces exist but should be planned early to avoid architectural rework.
 
 ## 6. Next Steps
-1. Finalize the interactive query transport (HTTP/gRPC) contract and wire metadata refresh scheduling ahead of Phase 2 runtime work.
-2. Expand the compatibility harness with additional fixtures (joins, aggregations, branch semantics) sourced from Java integration tests.
-3. Commence Phase 2 DSL parity by porting KStream joins and window definitions using the new query/runtime foundations.
+Phase 1 deliverables are complete. Follow-up work is now tracked under the dedicated [Phase 2 Gap Analysis](phase2-gap-analysis.md), which enumerates the DSL parity milestones and supporting tasks that build on this foundation.
