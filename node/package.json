@@ -1,0 +1,26 @@
+{
+  "name": "kafka-streams-node",
+  "version": "0.1.0",
+  "description": "Node.js port of Kafka Streams built on top of @confluentinc/kafka-javascript",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "lint": "eslint .",
+    "test": "node --test"
+  },
+  "keywords": [
+    "kafka",
+    "streams",
+    "kafka-streams",
+    "kstream"
+  ],
+  "author": "",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@confluentinc/kafka-javascript": "^1.6.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0"
+  }
+}
