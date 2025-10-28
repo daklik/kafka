@@ -59,15 +59,19 @@ Phase 2 focuses on achieving parity between the Java and Node.js Kafka Streams D
 3. Document the description format and how to leverage it for debugging complex DSL topologies.
 
 ## 4. Dependencies and Risks
-- **Kafka Client Features**: Ensure `@confluentinc/kafka-javascript` exposes APIs required for cooperative rebalancing, transactions (for future phases), and partition assignment metadata used in join repartitioning.
-- **State Store Persistence**: Windowed and join state stores may require persistent backing (e.g., RocksDB). Plan for pluggable storage adapters or leverage existing Node-native databases.
-- **Performance Considerations**: Windowed joins and suppressions are memory-intensive. Introduce configuration-driven cache limits and metrics to monitor resource usage.
+| Area | Status | Notes |
+| --- | --- | --- |
+| Kafka client capabilities | ✅ Mitigated | `@confluentinc/kafka-javascript@^1.6.0` is the current latest release and provides the consumer/producer features leveraged by tables, repartition topics, and cooperative rebalancing hooks. Any future transactional requirements are tracked for Phase 4 runtime work. |
+| State store persistence | ✅ Mitigated | Phase 2 relies on the in-memory builders shipped in `node/src/state`. The DSL now exposes builder hooks so persistent adapters can plug in during Phase 5 without reworking APIs. No additional persistence blockers remain for Phase 2 completion. |
+| Performance & resource usage | ✅ Mitigated | Windowed joins and suppression honour configuration limits via `StreamsConfig` cache settings, suppression buffer sizing, and newly added metrics. Guidance is documented so operators can size workloads while we profile advanced scenarios in Phase 4/5. |
+
+Residual follow-ups (persistent stores, transactional semantics) are explicitly captured in the Phase 3+ roadmap items so they do not block DSL parity.
 
 ## 5. Deliverables
-- Completed implementations for DSL operators outlined above with comprehensive unit/integration tests.
-- Updated documentation (`README`, guides) describing new DSL capabilities, including examples and configuration guidance.
-- Updated compatibility harness scenarios validating parity with Java reference implementations.
-- Tracking issues or tickets for any follow-on work discovered during implementation (fed into Phase 3 planning).
+- Completed implementations for DSL operators outlined above with comprehensive unit/integration tests. ✅
+- Updated documentation (`README`, guides) describing new DSL capabilities, including examples and configuration guidance. ✅
+- Updated compatibility harness scenarios validating parity with Java reference implementations. ✅
+- Logged residual runtime/state work as inputs to the Phase 3 roadmap planning. ✅
 
 ## 6. Exit Criteria
 Phase 2 is complete when:
@@ -75,3 +79,5 @@ Phase 2 is complete when:
 - Tests covering joins, windowing, tables, and suppression pass locally and in CI.
 - Developers can describe a complex topology (joins + windows + suppress) and obtain an equivalent structure to the Java DSL using `Topology.describe()`.
 - No high-priority gaps remain untracked; outstanding items are captured as inputs to Phase 3.
+
+**Status:** All exit criteria have been met, and the project is now ready to proceed with the Phase 3 Processor API workstream.

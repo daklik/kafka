@@ -23,7 +23,7 @@ _Deliverable_: Gap analysis report with prioritized backlog mapped to Node.js mo
 3. **Windowing Model**: Introduce tumbling, hopping, sliding, and session windows mirroring `TimeWindows`, `SessionWindows`, and windowed stores.
 4. **Topology Description**: Ensure `Topology.describe()` style output for debugging parity.
 
-_Deliverable_: Expanded `StreamsBuilder`/DSL API with parity tests referencing Java behavior. Detailed milestones are captured in the [Phase 2 Gap Analysis](phase2-gap-analysis.md). **Status:** Steps 1–6 are complete, including table/global table materialization, stream joins, windowed aggregations, suppression with final-result buffering, and topology descriptions that expose processor/store metadata for debugging parity.
+_Deliverable_: Expanded `StreamsBuilder`/DSL API with parity tests referencing Java behavior. Detailed milestones are captured in the [Phase 2 Gap Analysis](phase2-gap-analysis.md). **Status:** Steps 1–6 are complete, dependencies and risks are mitigated, and the DSL stack is ready for Phase 3 Processor API work.
 
 ## Phase 3 – Processor API & Topology Infrastructure
 1. **Processor Contexts**: Recreate `ProcessorContext`, `To`, and `RecordMetadata` behaviors for custom processors.
