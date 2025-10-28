@@ -2,6 +2,7 @@
 
 const { StoreBuilder } = require('./store-builder');
 const { MemoryStateStore } = require('./memory-store');
+const { MemoryWindowStore } = require('./memory-window-store');
 
 const Stores = {
   inMemoryKeyValueStore(name) {
@@ -17,6 +18,26 @@ const Stores = {
     return new StoreBuilder({
       name,
       type: 'keyValue',
+      supplier,
+      loggingEnabled: options.loggingEnabled ?? true,
+      cachingEnabled: options.cachingEnabled ?? false,
+      changelogConfig: options.changelogConfig
+    });
+  },
+
+  inMemoryWindowStore(name, { retention, windowSize } = {}) {
+    return new StoreBuilder({
+      name,
+      type: 'window',
+      supplier: () => new MemoryWindowStore(name, { retention, windowSize }),
+      loggingEnabled: false
+    });
+  },
+
+  windowStoreBuilder(name, supplier, options = {}) {
+    return new StoreBuilder({
+      name,
+      type: 'window',
       supplier,
       loggingEnabled: options.loggingEnabled ?? true,
       cachingEnabled: options.cachingEnabled ?? false,

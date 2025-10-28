@@ -7,6 +7,9 @@ const { Materialized } = require('./materialized');
 const { Named } = require('./named');
 const { Joined } = require('./joined');
 const { ValueJoiner } = require('./value-joiner');
+const { MemoryWindowStore } = require('./state/memory-window-store');
+const { JoinWindows } = require('./windows/join-windows');
+const { SlidingWindows } = require('./windows/sliding-windows');
 
 class KStream {
   constructor({
@@ -44,6 +47,7 @@ class KStream {
     this._topology = topology;
     this._lastNodeId = initialNodeId ?? id;
     this.nodeName = origin?.name ?? (isSource ? Named.from(origin, `source-${sourceTopic}`) ?? `source-${sourceTopic}` : `stream-${id}`);
+    this._joinBuffers = [];
   }
 
   cloneWith(options = {}) {
@@ -171,6 +175,41 @@ class KStream {
     };
     this.stateStores.set(name, definition);
     return definition;
+  }
+
+  _registerJoinBuffer({ joinId, partnerStreamId, storeName, retentionMs, windowMetadata }) {
+    if (!joinId || !storeName) {
+      throw new Error('Join buffer registration requires joinId and storeName');
+    }
+    if (this._joinBuffers.some(buffer => buffer.joinId === joinId && buffer.storeName === storeName)) {
+      return;
+    }
+    this._joinBuffers.push({
+      joinId,
+      partnerStreamId,
+      storeName,
+      retentionMs,
+      window: windowMetadata
+    });
+  }
+
+  _normalizeJoinWindow(window) {
+    if (!window) {
+      throw new Error('Stream-stream joins require a window specification');
+    }
+    if (!(window instanceof JoinWindows) && !(window instanceof SlidingWindows)) {
+      throw new Error('Stream-stream joins require JoinWindows or SlidingWindows definitions');
+    }
+
+    const retentionMs = typeof window.retentionPeriod === 'function' ? window.retentionPeriod() : null;
+    const windowSizeMs = typeof window.windowSize === 'function' ? window.windowSize() : null;
+
+    return {
+      instance: window,
+      retentionMs,
+      windowSizeMs,
+      metadata: window.describe?.() ?? null
+    };
   }
 
   map(mapper, options = {}) {
@@ -413,10 +452,67 @@ class KStream {
 
     const joinedOptions = this._resolveJoined(options.joined ?? options, otherStream);
     const otherStreamType = isTableLike ? (otherStream.isGlobalKTable ? 'global-table' : 'table') : 'stream';
-    const storeName = options.storeName ?? otherStream.materialized?.storeName;
+
+    let streamJoinConfig = null;
+    let storeName = options.storeName ?? otherStream.materialized?.storeName;
 
     if (otherStreamType !== 'stream' && !storeName) {
       throw new Error('Stream-table joins require the table to be materialized');
+    }
+
+    if (otherStreamType === 'stream') {
+      const windowSpec = this._normalizeJoinWindow(options.window);
+      const joinId = options.joinId ?? uuidv4();
+      const baseName = Named.from(options.named ?? joinedOptions.named, `join-${this.id.slice(0, 6)}-${otherStream.id.slice(0, 6)}`);
+      const thisStoreName = options.thisStoreName ?? `${baseName}-this`;
+      const otherStoreName = options.otherStoreName ?? `${baseName}-other`;
+      const retentionMs = windowSpec.retentionMs ?? windowSpec.windowSizeMs ?? 0;
+
+      const thisStoreBuilder = new StoreBuilder({
+        name: thisStoreName,
+        type: 'window',
+        supplier: () => new MemoryWindowStore(thisStoreName, { retention: retentionMs, windowSize: windowSpec.windowSizeMs }),
+        loggingEnabled: options.logging ?? false,
+        cachingEnabled: options.caching ?? false,
+        changelogConfig: options.changelogConfig
+      });
+
+      const otherStoreBuilder = new StoreBuilder({
+        name: otherStoreName,
+        type: 'window',
+        supplier: () => new MemoryWindowStore(otherStoreName, { retention: retentionMs, windowSize: windowSpec.windowSizeMs }),
+        loggingEnabled: options.logging ?? false,
+        cachingEnabled: options.caching ?? false,
+        changelogConfig: options.changelogConfig
+      });
+
+      this._registerStateStore({
+        name: thisStoreName,
+        storeBuilder: thisStoreBuilder,
+        keySerde: joinedOptions.keySerde ?? this.keySerde,
+        valueSerde: this.valueSerde
+      });
+      otherStream._registerStateStore({
+        name: otherStoreName,
+        storeBuilder: otherStoreBuilder,
+        keySerde: joinedOptions.keySerde ?? otherStream.keySerde,
+        valueSerde: otherStream.valueSerde
+      });
+      otherStream._registerJoinBuffer({
+        joinId,
+        partnerStreamId: this.id,
+        storeName: otherStoreName,
+        retentionMs,
+        windowMetadata: windowSpec.metadata
+      });
+
+      streamJoinConfig = {
+        joinId,
+        thisStoreName,
+        otherStoreName,
+        retentionMs,
+        window: windowSpec
+      };
     }
 
     const joinOperation = this._appendOperation('join', joinFn, {
@@ -424,14 +520,20 @@ class KStream {
       otherStreamId: otherStream.id,
       otherStreamType,
       storeName,
+      thisStoreName: streamJoinConfig?.thisStoreName,
+      otherStoreName: streamJoinConfig?.otherStoreName,
+      window: streamJoinConfig?.window.metadata ?? null,
+      windowRetentionMs: streamJoinConfig?.retentionMs ?? null,
       keySerde: joinedOptions.keySerde,
       valueSerde: joinedOptions.valueSerde,
       otherValueSerde: joinedOptions.otherValueSerde,
       named: options.named ?? joinedOptions.named,
-      window: options.window,
       materialized: options.materialized,
       joined: joinedOptions
     });
+    if (streamJoinConfig) {
+      joinOperation.windowInstance = streamJoinConfig.window.instance;
+    }
     joinOperation.targetStreamId = otherStream.id;
     return this;
   }
@@ -448,6 +550,7 @@ class KStream {
         type: operation.type,
         fn: operation.fn,
         options: operation.options,
+        windowInstance: operation.windowInstance,
         branches: operation.branches,
         targetStreamId: operation.targetStreamId,
         metadata: this._sanitizeTopologyOptions(operation.options)
@@ -460,6 +563,7 @@ class KStream {
         builder: store.builder,
         builderMetadata: store.builder.describe()
       })),
+      joinBuffers: this._joinBuffers.map(buffer => ({ ...buffer })),
       isSource: this.isSource,
       origin: this.origin
     };

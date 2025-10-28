@@ -10,7 +10,8 @@ const {
   MemoryStateStore,
   Materialized,
   Joined,
-  ValueJoiner
+  ValueJoiner,
+  windows: { JoinWindows }
 } = require('../src');
 
 class InMemoryProducer {
@@ -436,4 +437,265 @@ test('stream-table left join emits records with nulls when table is missing', as
     { topic: 'left-joined-topic', value: { orderId: 'order-42', customerName: 'Bob' } },
     { topic: 'left-joined-topic', value: { orderId: 'order-43', customerName: null } }
   ]);
+});
+
+test('stream-stream inner join matches records within the join window', async () => {
+  const builder = new StreamsBuilder();
+  const purchases = builder.stream('purchases-topic', { keySerde: Serde.string(), valueSerde: Serde.json() });
+  const clicks = builder.stream('clicks-topic', { keySerde: Serde.string(), valueSerde: Serde.json() });
+
+  purchases
+    .join(
+      clicks,
+      ValueJoiner.with((purchase, click) => ({
+        purchaseId: purchase.id,
+        clickUrl: click?.url ?? null
+      })),
+      { window: JoinWindows.of(5_000), joined: Joined.withKeyValueSerde(Serde.string(), Serde.json()) }
+    )
+    .to('joined-purchases', { valueSerde: Serde.json() });
+
+  const topology = builder.build();
+  const kafkaStreams = new KafkaStreams(topology, { applicationId: 'stream-stream-inner' });
+  const purchaseStream = topology.streams.find(s => s.sourceTopic === 'purchases-topic');
+  const clickStream = topology.streams.find(s => s.sourceTopic === 'clicks-topic');
+
+  const stringSerde = Serde.string();
+  const jsonSerde = Serde.json();
+
+  const purchaseStores = new Map();
+  for (const definition of purchaseStream.stateStores) {
+    purchaseStores.set(definition.name, await definition.builder.build({ stream: purchaseStream }));
+  }
+  kafkaStreams._registerPrebuiltStateStores(purchaseStream, purchaseStores);
+
+  const clickStores = new Map();
+  for (const definition of clickStream.stateStores) {
+    clickStores.set(definition.name, await definition.builder.build({ stream: clickStream }));
+  }
+  kafkaStreams._registerPrebuiltStateStores(clickStream, clickStores);
+
+  await kafkaStreams._processMessage(
+    clickStream,
+    {
+      topic: 'clicks-topic',
+      partition: 0,
+      message: {
+        key: stringSerde.serialize('user-1'),
+        value: jsonSerde.serialize({ url: 'https://example.com/item' }),
+        headers: {},
+        timestamp: String(1_000)
+      }
+    },
+    new InMemoryProducer(),
+    clickStores
+  );
+
+  const producer = new InMemoryProducer();
+
+  await kafkaStreams._processMessage(
+    purchaseStream,
+    {
+      topic: 'purchases-topic',
+      partition: 0,
+      message: {
+        key: stringSerde.serialize('user-1'),
+        value: jsonSerde.serialize({ id: 'order-9' }),
+        headers: {},
+        timestamp: String(3_000)
+      }
+    },
+    producer,
+    purchaseStores
+  );
+
+  assert.equal(producer.produced.length, 1);
+  const event = producer.produced[0];
+  assert.equal(event.topic, 'joined-purchases');
+  assert.deepEqual(JSON.parse(event.message.value.toString()), {
+    purchaseId: 'order-9',
+    clickUrl: 'https://example.com/item'
+  });
+
+  producer.produced = [];
+
+  await kafkaStreams._processMessage(
+    purchaseStream,
+    {
+      topic: 'purchases-topic',
+      partition: 0,
+      message: {
+        key: stringSerde.serialize('user-2'),
+        value: jsonSerde.serialize({ id: 'order-10' }),
+        headers: {},
+        timestamp: String(10_000)
+      }
+    },
+    producer,
+    purchaseStores
+  );
+
+  assert.equal(producer.produced.length, 0);
+});
+
+test('stream-stream left join emits null when the other stream has no match', async () => {
+  const builder = new StreamsBuilder();
+  const payments = builder.stream('payments-topic', { keySerde: Serde.string(), valueSerde: Serde.json() });
+  const shipments = builder.stream('shipments-topic', { keySerde: Serde.string(), valueSerde: Serde.json() });
+
+  payments
+    .leftJoin(
+      shipments,
+      (payment, shipment) => ({
+        paymentId: payment.id,
+        trackingId: shipment ? shipment.trackingId : null
+      }),
+      { window: JoinWindows.of(2_000), joined: Joined.withKeyValueSerde(Serde.string(), Serde.json()) }
+    )
+    .to('payments-shipments', { valueSerde: Serde.json() });
+
+  const topology = builder.build();
+  const kafkaStreams = new KafkaStreams(topology, { applicationId: 'stream-stream-left' });
+  const paymentStream = topology.streams.find(s => s.sourceTopic === 'payments-topic');
+  const shipmentStream = topology.streams.find(s => s.sourceTopic === 'shipments-topic');
+
+  const stringSerde = Serde.string();
+  const jsonSerde = Serde.json();
+
+  const paymentStores = new Map();
+  for (const definition of paymentStream.stateStores) {
+    paymentStores.set(definition.name, await definition.builder.build({ stream: paymentStream }));
+  }
+  kafkaStreams._registerPrebuiltStateStores(paymentStream, paymentStores);
+
+  const shipmentStores = new Map();
+  for (const definition of shipmentStream.stateStores) {
+    shipmentStores.set(definition.name, await definition.builder.build({ stream: shipmentStream }));
+  }
+  kafkaStreams._registerPrebuiltStateStores(shipmentStream, shipmentStores);
+
+  const producer = new InMemoryProducer();
+
+  await kafkaStreams._processMessage(
+    paymentStream,
+    {
+      topic: 'payments-topic',
+      partition: 0,
+      message: {
+        key: stringSerde.serialize('order-1'),
+        value: jsonSerde.serialize({ id: 'payment-1' }),
+        headers: {},
+        timestamp: String(1_000)
+      }
+    },
+    producer,
+    paymentStores
+  );
+
+  assert.equal(producer.produced.length, 1);
+  assert.deepEqual(JSON.parse(producer.produced[0].message.value.toString()), {
+    paymentId: 'payment-1',
+    trackingId: null
+  });
+
+  producer.produced = [];
+
+  await kafkaStreams._processMessage(
+    shipmentStream,
+    {
+      topic: 'shipments-topic',
+      partition: 0,
+      message: {
+        key: stringSerde.serialize('order-1'),
+        value: jsonSerde.serialize({ trackingId: 'track-123' }),
+        headers: {},
+        timestamp: String(2_500)
+      }
+    },
+    new InMemoryProducer(),
+    shipmentStores
+  );
+
+  await kafkaStreams._processMessage(
+    paymentStream,
+    {
+      topic: 'payments-topic',
+      partition: 0,
+      message: {
+        key: stringSerde.serialize('order-1'),
+        value: jsonSerde.serialize({ id: 'payment-2' }),
+        headers: {},
+        timestamp: String(3_000)
+      }
+    },
+    producer,
+    paymentStores
+  );
+
+  assert.equal(producer.produced.length, 1);
+  assert.deepEqual(JSON.parse(producer.produced[0].message.value.toString()), {
+    paymentId: 'payment-2',
+    trackingId: 'track-123'
+  });
+});
+
+test('stream-stream outer join behaves like left join for unmatched records in the initiating stream', async () => {
+  const builder = new StreamsBuilder();
+  const a = builder.stream('a-topic', { keySerde: Serde.string(), valueSerde: Serde.json() });
+  const b = builder.stream('b-topic', { keySerde: Serde.string(), valueSerde: Serde.json() });
+
+  a
+    .outerJoin(
+      b,
+      (left, right) => ({
+        leftId: left.id,
+        rightValue: right ? right.value : null
+      }),
+      { window: JoinWindows.of(1_000), joined: Joined.withKeyValueSerde(Serde.string(), Serde.json()) }
+    )
+    .to('outer-joined', { valueSerde: Serde.json() });
+
+  const topology = builder.build();
+  const kafkaStreams = new KafkaStreams(topology, { applicationId: 'stream-stream-outer' });
+  const streamA = topology.streams.find(s => s.sourceTopic === 'a-topic');
+  const streamB = topology.streams.find(s => s.sourceTopic === 'b-topic');
+
+  const stringSerde = Serde.string();
+  const jsonSerde = Serde.json();
+
+  const storesA = new Map();
+  for (const definition of streamA.stateStores) {
+    storesA.set(definition.name, await definition.builder.build({ stream: streamA }));
+  }
+  kafkaStreams._registerPrebuiltStateStores(streamA, storesA);
+
+  const storesB = new Map();
+  for (const definition of streamB.stateStores) {
+    storesB.set(definition.name, await definition.builder.build({ stream: streamB }));
+  }
+  kafkaStreams._registerPrebuiltStateStores(streamB, storesB);
+
+  const producer = new InMemoryProducer();
+
+  await kafkaStreams._processMessage(
+    streamA,
+    {
+      topic: 'a-topic',
+      partition: 0,
+      message: {
+        key: stringSerde.serialize('k-1'),
+        value: jsonSerde.serialize({ id: 'left-1' }),
+        headers: {},
+        timestamp: String(1_000)
+      }
+    },
+    producer,
+    storesA
+  );
+
+  assert.equal(producer.produced.length, 1);
+  assert.deepEqual(JSON.parse(producer.produced[0].message.value.toString()), {
+    leftId: 'left-1',
+    rightValue: null
+  });
 });

@@ -11,6 +11,7 @@ const { StreamsConfig } = require('./config/streams-config');
 const { KTable, GlobalKTable } = require('./ktable');
 const { Joined } = require('./joined');
 const { ValueJoiner } = require('./value-joiner');
+const windows = require('./windows');
 const metrics = require('./metrics');
 const errors = require('./errors');
 const query = require('./query');
@@ -30,5 +31,8 @@ module.exports = {
   metrics,
   errors,
   query,
+  windows,
+  JoinWindows: windows.JoinWindows,
+  SlidingWindows: windows.SlidingWindows,
   ...state
 };

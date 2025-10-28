@@ -161,6 +161,8 @@ class KafkaStreams extends EventEmitter {
       value
     };
 
+    await this._bufferStreamJoins(stream, record, stores);
+
     const results = await this._runOperations(stream, [record], producer, stores, headers, timestamp);
 
     if (stream.isTable) {
@@ -487,7 +489,11 @@ class KafkaStreams extends EventEmitter {
       return this._applyStreamTableJoin({ stream, operation, records, tableStream: otherStream });
     }
 
-    throw new Error('Stream-stream joins are not yet implemented in the Node.js port');
+    if (options.otherStreamType === 'stream') {
+      return this._applyStreamStreamJoin({ stream, operation, records, otherStream });
+    }
+
+    throw new Error('Unsupported join target type');
   }
 
   async _applyStreamTableJoin({ stream, operation, records, tableStream }) {
@@ -538,6 +544,103 @@ class KafkaStreams extends EventEmitter {
     }
 
     return results;
+  }
+
+  async _applyStreamStreamJoin({ stream, operation, records, otherStream }) {
+    const options = operation.options ?? {};
+    const joinType = options.joinType ?? 'inner';
+    const thisStoreName = options.thisStoreName;
+    const otherStoreName = options.otherStoreName;
+    const windowInstance = operation.windowInstance;
+
+    if (!thisStoreName || !otherStoreName) {
+      throw new Error('Stream-stream joins require window store definitions for both streams');
+    }
+    if (!windowInstance || typeof windowInstance.bounds !== 'function') {
+      throw new Error('Stream-stream joins require a window specification');
+    }
+
+    const selfStores = await this._ensureStateStores(stream);
+    const otherStores = await this._ensureStateStores(otherStream);
+    const thisStore = selfStores.get(thisStoreName);
+    const otherStore = otherStores.get(otherStoreName);
+
+    if (!thisStore) {
+      throw new Error(`State store ${thisStoreName} was not initialised for stream-stream join`);
+    }
+    if (!otherStore) {
+      throw new Error(`State store ${otherStoreName} was not initialised for stream-stream join`);
+    }
+
+    const retentionMs = options.windowRetentionMs ?? (typeof windowInstance.retentionPeriod === 'function' ? windowInstance.retentionPeriod() : 0);
+    const results = [];
+
+    for (const record of records) {
+      const timestamp = record.timestamp ?? Date.now();
+      if (retentionMs && typeof thisStore.purge === 'function') {
+        await thisStore.purge(timestamp - retentionMs);
+      }
+      if (retentionMs && typeof otherStore.purge === 'function') {
+        await otherStore.purge(timestamp - retentionMs);
+      }
+
+      const key = record.key;
+
+      if (key === null || key === undefined) {
+        if (joinType === 'left' || joinType === 'outer') {
+          const joinedValue = await operation.fn(record.value, null, record);
+          results.push({ ...record, value: joinedValue });
+        }
+        await thisStore.put(key, record.value, timestamp);
+        continue;
+      }
+
+      const { start, end } = windowInstance.bounds(timestamp);
+      const matches = await otherStore.fetch(key, start, end);
+
+      if (matches.length) {
+        for (const match of matches) {
+          const joinedValue = await operation.fn(record.value, match.value, record);
+          const outTimestamp = Math.max(timestamp, match.timestamp ?? timestamp);
+          results.push({ ...record, value: joinedValue, timestamp: outTimestamp });
+        }
+      } else if (joinType === 'left' || joinType === 'outer') {
+        const joinedValue = await operation.fn(record.value, null, record);
+        results.push({ ...record, value: joinedValue });
+      }
+
+      await thisStore.put(key, record.value, timestamp);
+    }
+
+    if (results.length) {
+      this._metrics.record('stream.records.joined', results.length, {
+        streamId: stream.id,
+        joinType,
+        otherStreamId: otherStream.id
+      });
+    }
+
+    return results;
+  }
+
+  async _bufferStreamJoins(stream, record, stores) {
+    const buffers = Array.isArray(stream.joinBuffers) ? stream.joinBuffers : [];
+    if (!buffers.length) {
+      return;
+    }
+
+    const timestamp = record.timestamp ?? Date.now();
+
+    for (const buffer of buffers) {
+      const store = stores.get(buffer.storeName);
+      if (!store || typeof store.put !== 'function') {
+        continue;
+      }
+      if (buffer.retentionMs && typeof store.purge === 'function') {
+        await store.purge(timestamp - buffer.retentionMs);
+      }
+      await store.put(record.key, record.value, timestamp);
+    }
   }
 
   async _ensureStateStores(stream) {

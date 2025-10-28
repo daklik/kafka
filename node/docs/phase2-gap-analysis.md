@@ -32,6 +32,7 @@ Phase 2 focuses on achieving parity between the Java and Node.js Kafka Streams D
 4. Cover join behaviors with unit tests and compatibility fixtures (e.g., stream-table join word count variant).
 
 ### Step 3 – Implement Stream-Stream Joins (P1)
+**Status:** ✅ Completed with window specifications, windowed state stores, join buffering, and regression tests covering inner, left, and outer joins.
 1. Define window specification classes (`JoinWindows`, `SlidingWindows`) referencing Java implementations under `kstream/internals`.
 2. Implement `KStream` stream-stream join operators (inner, left, outer) using windowed state stores for buffering and match Java default grace periods.
 3. Extend state store module with windowed store builders required for join buffering, including retention configuration and changelog registration.

@@ -68,7 +68,7 @@ Transformation and branching primitives mirror the Java DSL:
 - `repartition(options)`
 - `through(topic, options)`
 - `to(topic, options)`
-- `join/leftJoin/outerJoin` for stream-table joins via materialized tables (stream-stream joins arrive in a later phase)
+- `join/leftJoin/outerJoin` for stream-table and stream-stream joins with configurable serdes and window definitions
 
 ### KTable & GlobalKTable
 
@@ -102,6 +102,34 @@ orders
   )
   .to('enriched-orders', { valueSerde: Serde.json() });
 ```
+
+#### Stream-Stream Joins and Windows
+
+Stream-stream joins mirror the Java DSL by buffering each side in a windowed state store and emitting matches based on window boundaries. Use the `windows.JoinWindows` helper for symmetric before/after windows or `windows.SlidingWindows` for time-difference joins. The join output is driven by the stream that declares the join (mirroring how Java's `KStream#join` returns a new stream derived from the caller).
+
+```js
+const { StreamsBuilder, Serde, Joined, ValueJoiner, windows } = require('kafka-streams-node');
+
+const builder = new StreamsBuilder();
+const purchases = builder.stream('purchases-topic', { keySerde: Serde.string(), valueSerde: Serde.json() });
+const clicks = builder.stream('clicks-topic', { keySerde: Serde.string(), valueSerde: Serde.json() });
+
+purchases
+  .join(
+    clicks,
+    ValueJoiner.with((purchase, click) => ({
+      purchaseId: purchase.id,
+      clickUrl: click?.url ?? null
+    })),
+    {
+      window: windows.JoinWindows.of(5_000),
+      joined: Joined.withKeyValueSerde(Serde.string(), Serde.json())
+    }
+  )
+  .to('purchases-with-clicks', { valueSerde: Serde.json() });
+```
+
+By default the window grace period matches Java's 24 hour default; override it with `.grace(ms)` on the window specification. Additional window types become available as the Phase 2 roadmap progresses.
 
 ### KafkaStreams
 
