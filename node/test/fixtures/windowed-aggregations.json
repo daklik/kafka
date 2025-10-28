@@ -1,0 +1,22 @@
+{
+  "tumbling": [
+    { "key": { "key": "alpha", "window": { "start": 0, "end": 5000 } }, "value": 1 },
+    { "key": { "key": "alpha", "window": { "start": 0, "end": 5000 } }, "value": 2 },
+    { "key": { "key": "alpha", "window": { "start": 5000, "end": 10000 } }, "value": 1 }
+  ],
+  "hopping": [
+    { "key": { "key": "alpha", "window": { "start": 0, "end": 5000 } }, "value": 1 },
+    { "key": { "key": "alpha", "window": { "start": -2500, "end": 2500 } }, "value": 1 },
+    { "key": { "key": "alpha", "window": { "start": 2500, "end": 7500 } }, "value": 1 },
+    { "key": { "key": "alpha", "window": { "start": 0, "end": 5000 } }, "value": 2 }
+  ],
+  "sliding": [
+    { "key": { "key": "alpha", "window": { "start": 4000, "end": 6000 } }, "value": "alpha" },
+    { "key": { "key": "alpha", "window": { "start": 4500, "end": 6500 } }, "value": "alpha" }
+  ],
+  "session": [
+    { "key": { "key": "alpha", "window": { "start": 1000, "end": 1000 } }, "value": 1 },
+    { "key": { "key": "alpha", "window": { "start": 1000, "end": 1500 } }, "value": 2 },
+    { "key": { "key": "alpha", "window": { "start": 4000, "end": 4000 } }, "value": 1 }
+  ]
+}
