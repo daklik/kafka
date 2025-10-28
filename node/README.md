@@ -11,7 +11,7 @@ npm install kafka-streams-node
 ## Usage
 
 ```js
-const { StreamsBuilder, KafkaStreams, Serde } = require('kafka-streams-node');
+const { StreamsBuilder, KafkaStreams, Serde, Materialized } = require('kafka-streams-node');
 
 const builder = new StreamsBuilder();
 const stream = builder
@@ -24,6 +24,12 @@ const stream = builder
   .to('output-topic', {
     valueSerde: Serde.json()
   });
+
+const usersTable = builder.table('users-topic', {
+  keySerde: Serde.string(),
+  valueSerde: Serde.json(),
+  materialized: Materialized.as('users-store')
+});
 
 const kafkaStreams = new KafkaStreams(builder, {
   applicationId: 'example-stream-app',
@@ -44,6 +50,8 @@ kafkaStreams.on('error', console.error);
 ### StreamsBuilder
 
 - `stream(topic, options)` &rarr; creates a new `KStream` for the provided topic.
+- `table(topic, options)` &rarr; materializes a changelog topic as a queryable `KTable`.
+- `globalTable(topic, options)` &rarr; consumes a topic on every instance as a `GlobalKTable`.
 - `build()` &rarr; returns the topology description used by `KafkaStreams`.
 
 ### KStream
@@ -61,6 +69,12 @@ Transformation and branching primitives mirror the Java DSL:
 - `through(topic, options)`
 - `to(topic, options)`
 - `join/leftJoin/outerJoin` (API scaffolded – execution semantics coming in a later phase)
+
+### KTable & GlobalKTable
+
+- `builder.table(topic, options)` materializes changelog topics into local state stores. Combine with `Materialized`/`Named` for Java-parity naming and serde configuration.
+- `builder.globalTable(topic, options)` mirrors Java's `globalTable`, consuming the full topic on each instance using a shared consumer group derived from the application id.
+- Materialized stores are registered with the interactive query service, enabling `KafkaStreams#store()` and `#metadataForStore()` to return table handles consistent with the Java API.
 
 ### KafkaStreams
 
@@ -112,7 +126,7 @@ res`.
 
 ### State Stores
 
-Aggregations materialize into local state stores. By default an in-memory key value store (`MemoryStateStore`) is used, but custom stores can be provided per aggregation via the `store` option.
+Aggregations and table sources materialize into local state stores. By default an in-memory key value store (`MemoryStateStore`) is used, but custom stores can be provided per aggregation or table via the `store` option.
 
 Phase 1 introduces parity helpers inspired by the Java API:
 

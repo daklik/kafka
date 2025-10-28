@@ -2,6 +2,7 @@
 
 const { v4: uuidv4 } = require('uuid');
 const { KStream } = require('./kstream');
+const { KTable, GlobalKTable } = require('./ktable');
 const { TopologyDescription } = require('./topology/topology-description');
 const { Named } = require('./named');
 
@@ -59,6 +60,114 @@ class StreamsBuilder {
       metadata: { topic, fromBeginning: options.fromBeginning ?? false }
     });
     return stream;
+  }
+
+  table(topic, options = {}) {
+    if (!topic) {
+      throw new Error('Topic name must be provided when creating a table');
+    }
+
+    const tableId = uuidv4();
+    const nodeName = Named.from(options.named, `table-${topic}`) ?? `table-${topic}`;
+    const materializedConfig = this._materializedOptions(topic, options);
+    const table = new KTable({
+      id: tableId,
+      builder: this,
+      sourceTopic: topic,
+      fromBeginning: options.fromBeginning ?? true,
+      keySerde: options.keySerde,
+      valueSerde: options.valueSerde,
+      topology: this._topology,
+      materialized: materializedConfig,
+      nodeName,
+      origin: { type: 'table', topic, name: nodeName }
+    });
+
+    this._registerStream(table);
+    this._topology.addNode({
+      id: table.id,
+      name: nodeName,
+      type: 'table',
+      metadata: {
+        topic,
+        tableType: 'table',
+        materialized: {
+          storeName: table.materialized.storeName,
+          changelogTopic: table.materialized.changelogTopic,
+          logging: table.materialized.logging,
+          caching: table.materialized.caching
+        }
+      }
+    });
+    return table;
+  }
+
+  globalTable(topic, options = {}) {
+    if (!topic) {
+      throw new Error('Topic name must be provided when creating a global table');
+    }
+
+    const tableId = uuidv4();
+    const nodeName = Named.from(options.named, `global-table-${topic}`) ?? `global-table-${topic}`;
+    const materializedConfig = this._materializedOptions(topic, options);
+    const table = new GlobalKTable({
+      id: tableId,
+      builder: this,
+      sourceTopic: topic,
+      keySerde: options.keySerde,
+      valueSerde: options.valueSerde,
+      topology: this._topology,
+      materialized: materializedConfig,
+      nodeName,
+      origin: { type: 'globalTable', topic, name: nodeName }
+    });
+
+    this._registerStream(table);
+    this._topology.addNode({
+      id: table.id,
+      name: nodeName,
+      type: 'global-table',
+      metadata: {
+        topic,
+        tableType: 'global',
+        materialized: {
+          storeName: table.materialized.storeName,
+          changelogTopic: table.materialized.changelogTopic,
+          logging: table.materialized.logging,
+          caching: table.materialized.caching
+        }
+      }
+    });
+    return table;
+  }
+
+  _materializedOptions(topic, options) {
+    if (options.materialized) {
+      return {
+        materialized: options.materialized,
+        storeBuilder: options.storeBuilder,
+        store: options.store,
+        storeName: options.storeName,
+        keySerde: options.keySerde,
+        valueSerde: options.valueSerde,
+        logging: options.logging,
+        caching: options.caching,
+        changelogConfig: options.changelogConfig,
+        changelogTopic: options.changelogTopic ?? topic
+      };
+    }
+
+    return {
+      storeBuilder: options.storeBuilder ?? options.store,
+      store: options.store,
+      storeName: options.storeName,
+      keySerde: options.keySerde,
+      valueSerde: options.valueSerde,
+      logging: options.logging,
+      caching: options.caching,
+      changelogConfig: options.changelogConfig,
+      changelogTopic: options.changelogTopic ?? topic
+    };
   }
 
   build() {

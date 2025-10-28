@@ -18,6 +18,7 @@ Phase 2 focuses on achieving parity between the Java and Node.js Kafka Streams D
 ## 3. Step-by-Step Plan
 
 ### Step 1 – Establish Table Foundations (P0)
+**Status:** ✅ Completed in the initial Phase 2 deliverable. `KTable`/`GlobalKTable` sources, materialization, changelog metadata, and interactive query integration now exist in the Node port.
 1. Port `KTable` and `GlobalKTable` classes, mirroring Java interfaces (`KTable.java`, `GlobalKTable.java`) with Node-friendly async patterns.
 2. Implement table materialization via `Materialized` helpers, leveraging the existing state store builders; ensure changelog topics are registered through `Topology` metadata.
 3. Extend `StreamsBuilder` to register table sources (`table()`, `globalTable()`) and connect to changelog/backing topics.

@@ -184,6 +184,10 @@ class StreamsConfig {
     if (typeof this.raw.groupId === 'string') {
       return this.raw.groupId;
     }
+    if (stream?.isGlobalKTable) {
+      const topic = stream.sourceTopic ?? stream.materialized?.storeName ?? stream.id;
+      return `${this.applicationId}-global-${topic}`;
+    }
     return `${this.groupIdPrefix}-${stream.id}`;
   }
 

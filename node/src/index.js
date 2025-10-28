@@ -8,6 +8,7 @@ const { TaskManager } = require('./runtime/task-manager');
 const { Named } = require('./named');
 const { Materialized } = require('./materialized');
 const { StreamsConfig } = require('./config/streams-config');
+const { KTable, GlobalKTable } = require('./ktable');
 const metrics = require('./metrics');
 const errors = require('./errors');
 const query = require('./query');
@@ -18,6 +19,8 @@ module.exports = {
   Serde,
   Named,
   Materialized,
+  KTable,
+  GlobalKTable,
   TaskManager,
   StreamsConfig,
   metrics,

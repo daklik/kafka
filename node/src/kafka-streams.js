@@ -162,6 +162,14 @@ class KafkaStreams extends EventEmitter {
     };
 
     const results = await this._runOperations(stream, [record], producer, stores, headers, timestamp);
+
+    if (stream.isTable) {
+      const updates = results.length ? results : [record];
+      await this._updateTableState(stream, updates, stores);
+      this._metrics.record('table.records.updated', updates.length, { streamId: stream.id, topic });
+      return [];
+    }
+
     if (results.length) {
       this._metrics.record('stream.records.processed', results.length, { streamId: stream.id });
     }
@@ -564,6 +572,33 @@ class KafkaStreams extends EventEmitter {
       return true;
     }
     return false;
+  }
+
+  async _updateTableState(stream, records, stores) {
+    if (!records?.length) {
+      return;
+    }
+
+    const storeName = stream.materialized?.storeName ?? stream.stateStores?.[0]?.name;
+    if (!storeName) {
+      throw new Error(`Table ${stream.id} is missing a materialized state store`);
+    }
+
+    const store = stores.get(storeName);
+    if (!store) {
+      throw new Error(`State store ${storeName} was not initialised for table ${stream.id}`);
+    }
+
+    for (const record of records) {
+      if (record.key === null || record.key === undefined) {
+        continue;
+      }
+      if (record.value === null || record.value === undefined) {
+        await store.delete(record.key);
+      } else {
+        await store.put(record.key, record.value);
+      }
+    }
   }
 }
 
