@@ -3,7 +3,15 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { StreamsBuilder, KafkaStreams, Serde, MemoryStateStore } = require('../src');
+const {
+  StreamsBuilder,
+  KafkaStreams,
+  Serde,
+  MemoryStateStore,
+  Materialized,
+  Joined,
+  ValueJoiner
+} = require('../src');
 
 class InMemoryProducer {
   constructor() {
@@ -247,4 +255,185 @@ test('repartition creates intermediate topic and continues downstream processing
       .map(event => JSON.parse(event.message.value.toString())),
     [{ value: 10, seen: true }]
   );
+});
+
+test('stream-table inner join emits only matching records', async () => {
+  const builder = new StreamsBuilder();
+  const orders = builder.stream('orders-topic', { keySerde: Serde.string(), valueSerde: Serde.json() });
+  const customers = builder.table('customers-topic', {
+    keySerde: Serde.string(),
+    valueSerde: Serde.json(),
+    materialized: Materialized.as('customers-store')
+  });
+
+  orders
+    .join(
+      customers,
+      ValueJoiner.with((order, customer) => ({
+        orderId: order.id,
+        customerName: customer?.name ?? null
+      })),
+      { joined: Joined.withKeyValueSerde(Serde.string(), Serde.json()) }
+    )
+    .to('joined-topic', { valueSerde: Serde.json() });
+
+  const topology = builder.build();
+  const kafkaStreams = new KafkaStreams(topology, { applicationId: 'kstream-join-test-inner' });
+  const orderStream = topology.streams.find(s => s.sourceTopic === 'orders-topic');
+  const customerTable = topology.streams.find(s => s.sourceTopic === 'customers-topic');
+
+  const tableStores = new Map();
+  for (const definition of customerTable.stateStores) {
+    tableStores.set(definition.name, await definition.builder.build({ stream: customerTable }));
+  }
+  kafkaStreams._registerPrebuiltStateStores(customerTable, tableStores);
+
+  const stringSerde = Serde.string();
+  const jsonSerde = Serde.json();
+
+  await kafkaStreams._processMessage(
+    customerTable,
+    {
+      topic: 'customers-topic',
+      partition: 0,
+      message: {
+        key: stringSerde.serialize('customer-1'),
+        value: jsonSerde.serialize({ name: 'Alice' }),
+        headers: {}
+      }
+    },
+    new InMemoryProducer(),
+    tableStores
+  );
+
+  const producer = new InMemoryProducer();
+
+  await kafkaStreams._processMessage(
+    orderStream,
+    {
+      topic: 'orders-topic',
+      partition: 0,
+      message: {
+        key: stringSerde.serialize('customer-1'),
+        value: jsonSerde.serialize({ id: 'order-1' }),
+        headers: {}
+      }
+    },
+    producer,
+    new Map()
+  );
+
+  assert.equal(producer.produced.length, 1);
+  const joinedEvent = producer.produced[0];
+  assert.equal(joinedEvent.topic, 'joined-topic');
+  assert.deepEqual(JSON.parse(joinedEvent.message.value.toString()), {
+    orderId: 'order-1',
+    customerName: 'Alice'
+  });
+
+  producer.produced = [];
+
+  await kafkaStreams._processMessage(
+    orderStream,
+    {
+      topic: 'orders-topic',
+      partition: 0,
+      message: {
+        key: stringSerde.serialize('customer-2'),
+        value: jsonSerde.serialize({ id: 'order-2' }),
+        headers: {}
+      }
+    },
+    producer,
+    new Map()
+  );
+
+  assert.equal(producer.produced.length, 0);
+});
+
+test('stream-table left join emits records with nulls when table is missing', async () => {
+  const builder = new StreamsBuilder();
+  const orders = builder.stream('orders-topic', { keySerde: Serde.string(), valueSerde: Serde.json() });
+  const customers = builder.table('customers-topic', {
+    keySerde: Serde.string(),
+    valueSerde: Serde.json(),
+    materialized: Materialized.as('customers-store-left')
+  });
+
+  orders
+    .leftJoin(customers, (order, customer) => ({
+      orderId: order.id,
+      customerName: customer ? customer.name : null
+    }), { joined: Joined.as('orders-customers-left') })
+    .to('left-joined-topic', { valueSerde: Serde.json() });
+
+  const topology = builder.build();
+  const kafkaStreams = new KafkaStreams(topology, { applicationId: 'kstream-join-test-left' });
+  const orderStream = topology.streams.find(s => s.sourceTopic === 'orders-topic');
+  const customerTable = topology.streams.find(s => s.sourceTopic === 'customers-topic');
+
+  const tableStores = new Map();
+  for (const definition of customerTable.stateStores) {
+    tableStores.set(definition.name, await definition.builder.build({ stream: customerTable }));
+  }
+  kafkaStreams._registerPrebuiltStateStores(customerTable, tableStores);
+
+  const stringSerde = Serde.string();
+  const jsonSerde = Serde.json();
+  const producer = new InMemoryProducer();
+
+  await kafkaStreams._processMessage(
+    customerTable,
+    {
+      topic: 'customers-topic',
+      partition: 0,
+      message: {
+        key: stringSerde.serialize('customer-present'),
+        value: jsonSerde.serialize({ name: 'Bob' }),
+        headers: {}
+      }
+    },
+    new InMemoryProducer(),
+    tableStores
+  );
+
+  await kafkaStreams._processMessage(
+    orderStream,
+    {
+      topic: 'orders-topic',
+      partition: 0,
+      message: {
+        key: stringSerde.serialize('customer-present'),
+        value: jsonSerde.serialize({ id: 'order-42' }),
+        headers: {}
+      }
+    },
+    producer,
+    new Map()
+  );
+
+  await kafkaStreams._processMessage(
+    orderStream,
+    {
+      topic: 'orders-topic',
+      partition: 1,
+      message: {
+        key: stringSerde.serialize('customer-missing'),
+        value: jsonSerde.serialize({ id: 'order-43' }),
+        headers: {}
+      }
+    },
+    producer,
+    new Map()
+  );
+
+  const payloads = producer.produced.map(event => ({
+    topic: event.topic,
+    value: JSON.parse(event.message.value.toString())
+  }));
+
+  assert.deepEqual(payloads, [
+    { topic: 'left-joined-topic', value: { orderId: 'order-42', customerName: 'Bob' } },
+    { topic: 'left-joined-topic', value: { orderId: 'order-43', customerName: null } }
+  ]);
 });

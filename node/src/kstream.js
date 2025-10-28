@@ -5,6 +5,8 @@ const { MemoryStateStore } = require('./state/memory-store');
 const { StoreBuilder } = require('./state/store-builder');
 const { Materialized } = require('./materialized');
 const { Named } = require('./named');
+const { Joined } = require('./joined');
+const { ValueJoiner } = require('./value-joiner');
 
 class KStream {
   constructor({
@@ -97,6 +99,40 @@ class KStream {
       return materializedOrOptions.materialized.resolve(materializedOrOptions);
     }
     return materializedOrOptions;
+  }
+
+  _resolveJoined(joinedOrOptions = {}, otherStream) {
+    const defaults = {
+      keySerde: this.keySerde ?? null,
+      valueSerde: this.valueSerde ?? null,
+      otherValueSerde: otherStream?.valueSerde ?? null,
+      named: null
+    };
+
+    if (!joinedOrOptions) {
+      return { ...defaults };
+    }
+
+    if (joinedOrOptions instanceof Joined) {
+      return joinedOrOptions.resolve(defaults);
+    }
+
+    if (joinedOrOptions.joined instanceof Joined) {
+      const resolved = joinedOrOptions.joined.resolve(defaults);
+      return {
+        keySerde: joinedOrOptions.keySerde ?? resolved.keySerde,
+        valueSerde: joinedOrOptions.valueSerde ?? resolved.valueSerde,
+        otherValueSerde: joinedOrOptions.otherValueSerde ?? resolved.otherValueSerde,
+        named: joinedOrOptions.named ?? resolved.named
+      };
+    }
+
+    return {
+      keySerde: joinedOrOptions.keySerde ?? defaults.keySerde,
+      valueSerde: joinedOrOptions.valueSerde ?? defaults.valueSerde,
+      otherValueSerde: joinedOrOptions.otherValueSerde ?? defaults.otherValueSerde,
+      named: joinedOrOptions.named ?? defaults.named
+    };
   }
 
   _coerceStoreBuilder({ storeBuilder, store, storeName, changelogConfig, logging = true }) {
@@ -359,19 +395,42 @@ class KStream {
   }
 
   _registerJoin(type, otherStream, joiner, options = {}) {
-    if (!(otherStream instanceof KStream)) {
-      throw new Error('Join operations require another KStream');
+    const isTableLike = Boolean(otherStream?.isTable);
+    const isStreamLike = otherStream instanceof KStream && !isTableLike;
+
+    if (!isTableLike && !isStreamLike) {
+      throw new Error('Join operations require a KStream or KTable');
     }
-    if (typeof joiner !== 'function') {
+
+    let joinFn = joiner;
+    if (joiner instanceof ValueJoiner) {
+      joinFn = joiner.join.bind(joiner);
+    }
+
+    if (typeof joinFn !== 'function') {
       throw new Error('Join operations require a joiner function');
     }
 
-    const joinOperation = this._appendOperation('join', joiner, {
+    const joinedOptions = this._resolveJoined(options.joined ?? options, otherStream);
+    const otherStreamType = isTableLike ? (otherStream.isGlobalKTable ? 'global-table' : 'table') : 'stream';
+    const storeName = options.storeName ?? otherStream.materialized?.storeName;
+
+    if (otherStreamType !== 'stream' && !storeName) {
+      throw new Error('Stream-table joins require the table to be materialized');
+    }
+
+    const joinOperation = this._appendOperation('join', joinFn, {
       joinType: type,
       otherStreamId: otherStream.id,
+      otherStreamType,
+      storeName,
+      keySerde: joinedOptions.keySerde,
+      valueSerde: joinedOptions.valueSerde,
+      otherValueSerde: joinedOptions.otherValueSerde,
+      named: options.named ?? joinedOptions.named,
       window: options.window,
       materialized: options.materialized,
-      named: options.named
+      joined: joinedOptions
     });
     joinOperation.targetStreamId = otherStream.id;
     return this;

@@ -68,13 +68,40 @@ Transformation and branching primitives mirror the Java DSL:
 - `repartition(options)`
 - `through(topic, options)`
 - `to(topic, options)`
-- `join/leftJoin/outerJoin` (API scaffolded – execution semantics coming in a later phase)
+- `join/leftJoin/outerJoin` for stream-table joins via materialized tables (stream-stream joins arrive in a later phase)
 
 ### KTable & GlobalKTable
 
 - `builder.table(topic, options)` materializes changelog topics into local state stores. Combine with `Materialized`/`Named` for Java-parity naming and serde configuration.
 - `builder.globalTable(topic, options)` mirrors Java's `globalTable`, consuming the full topic on each instance using a shared consumer group derived from the application id.
 - Materialized stores are registered with the interactive query service, enabling `KafkaStreams#store()` and `#metadataForStore()` to return table handles consistent with the Java API.
+
+#### Stream-Table Joins
+
+Materialized tables can be joined back to streams using the familiar Java DSL operators. Configure serdes with the `Joined` helper and optional `ValueJoiner` wrapper when you want a reusable join function:
+
+```js
+const { StreamsBuilder, Serde, Materialized, Joined, ValueJoiner } = require('kafka-streams-node');
+
+const builder = new StreamsBuilder();
+const orders = builder.stream('orders-topic', { keySerde: Serde.string(), valueSerde: Serde.json() });
+const customers = builder.table('customers-topic', {
+  keySerde: Serde.string(),
+  valueSerde: Serde.json(),
+  materialized: Materialized.as('customers-store')
+});
+
+orders
+  .leftJoin(
+    customers,
+    ValueJoiner.with((order, customer) => ({
+      orderId: order.id,
+      customerName: customer?.name ?? null
+    })),
+    { joined: Joined.withKeyValueSerde(Serde.string(), Serde.json()) }
+  )
+  .to('enriched-orders', { valueSerde: Serde.json() });
+```
 
 ### KafkaStreams
 

@@ -247,7 +247,8 @@ class KafkaStreams extends EventEmitter {
           records = await this._applyRepartition(stream, operation, records, producer, headers, timestamp);
           break;
         case 'join':
-          throw new Error('Join operations are not yet implemented in the Node.js port');
+          records = await this._applyJoin(stream, operation, records, producer, headers, timestamp);
+          break;
         default:
           throw new Error(`Unsupported operation type: ${operation.type}`);
       }
@@ -468,6 +469,75 @@ class KafkaStreams extends EventEmitter {
     }
 
     return repartitioned;
+  }
+
+  async _applyJoin(stream, operation, records) {
+    const options = operation.options ?? {};
+    const targetStreamId = options.otherStreamId;
+    if (!targetStreamId) {
+      throw new Error('Join operation missing target stream id');
+    }
+
+    const otherStream = this._streamIndex.get(targetStreamId);
+    if (!otherStream) {
+      throw new Error(`Join target stream ${targetStreamId} was not registered in the topology`);
+    }
+
+    if (options.otherStreamType === 'table' || options.otherStreamType === 'global-table' || otherStream.isTable) {
+      return this._applyStreamTableJoin({ stream, operation, records, tableStream: otherStream });
+    }
+
+    throw new Error('Stream-stream joins are not yet implemented in the Node.js port');
+  }
+
+  async _applyStreamTableJoin({ stream, operation, records, tableStream }) {
+    const options = operation.options ?? {};
+    const storeName = options.storeName ?? tableStream.materialized?.storeName;
+    if (!storeName) {
+      throw new Error(`Join with table ${tableStream.id} requires a materialized state store`);
+    }
+
+    const tableStores = await this._ensureStateStores(tableStream);
+    const store = tableStores.get(storeName);
+    if (!store) {
+      throw new Error(`State store ${storeName} was not initialised for join with table ${tableStream.id}`);
+    }
+
+    const joinType = options.joinType ?? 'inner';
+    const results = [];
+
+    for (const record of records) {
+      const key = record.key;
+      if (key === null || key === undefined) {
+        if (joinType === 'left' || joinType === 'outer') {
+          const joinedValue = await operation.fn(record.value, null, record);
+          results.push({ ...record, value: joinedValue });
+        }
+        continue;
+      }
+
+      const tableValue = await store.get(key);
+      if (tableValue === undefined) {
+        if (joinType === 'left' || joinType === 'outer') {
+          const joinedValue = await operation.fn(record.value, null, record);
+          results.push({ ...record, value: joinedValue });
+        }
+        continue;
+      }
+
+      const joinedValue = await operation.fn(record.value, tableValue, record);
+      results.push({ ...record, value: joinedValue });
+    }
+
+    if (results.length) {
+      this._metrics.record('stream.records.joined', results.length, {
+        streamId: stream.id,
+        joinType,
+        otherStreamId: tableStream.id
+      });
+    }
+
+    return results;
   }
 
   async _ensureStateStores(stream) {

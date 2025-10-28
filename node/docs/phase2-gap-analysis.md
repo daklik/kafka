@@ -25,6 +25,7 @@ Phase 2 focuses on achieving parity between the Java and Node.js Kafka Streams D
 4. Add unit tests that validate table subscription, materialization, and read-only access through interactive queries.
 
 ### Step 2 – Implement Stream-Table Joins (P0)
+**Status:** ✅ Completed with the stream-table join implementation. The Node runtime now supports `join`/`leftJoin`/`outerJoin` between streams and materialized tables, exposes `Joined`/`ValueJoiner` helpers, and validates the behavior with regression tests.
 1. Introduce `Joined` and `ValueJoiner` helpers consistent with Java's `Joined` builder (`Joined.java`).
 2. Add `KStream#join`, `leftJoin`, and `outerJoin` with tables, ensuring repartition topics are created when key serde/topology requires.
 3. Support `KStream#table` joins using the new table abstractions and verify state store usage for lookup semantics.

@@ -9,6 +9,8 @@ const { Named } = require('./named');
 const { Materialized } = require('./materialized');
 const { StreamsConfig } = require('./config/streams-config');
 const { KTable, GlobalKTable } = require('./ktable');
+const { Joined } = require('./joined');
+const { ValueJoiner } = require('./value-joiner');
 const metrics = require('./metrics');
 const errors = require('./errors');
 const query = require('./query');
@@ -21,6 +23,8 @@ module.exports = {
   Materialized,
   KTable,
   GlobalKTable,
+  Joined,
+  ValueJoiner,
   TaskManager,
   StreamsConfig,
   metrics,
