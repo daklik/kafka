@@ -337,6 +337,7 @@ ainst the Node.js runtime and validates parity with Java word-count expectations
 - [Roadmap](docs/roadmap.md)
 - [Phase 1 Gap Analysis](docs/phase1-gap-analysis.md)
 - [Phase 2 Gap Analysis](docs/phase2-gap-analysis.md)
+- [Phase 3 Gap Analysis](docs/phase3-gap-analysis.md)
 
 ## License
 
