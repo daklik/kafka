@@ -59,6 +59,7 @@ class KTable {
       logging: resolvedMaterialization.logging !== false,
       caching: Boolean(resolvedMaterialization.caching)
     };
+
   }
 
   _resolveMaterialized(materializedOrOptions = {}, defaults = {}) {
@@ -115,7 +116,13 @@ class KTable {
       name: resolvedName,
       storeBuilder: configuredBuilder,
       keySerde: keySerde ?? this.keySerde,
-      valueSerde: valueSerde ?? this.valueSerde
+      valueSerde: valueSerde ?? this.valueSerde,
+      metadata: {
+        type: this.isGlobalKTable ? 'global-table-materialization' : 'table-materialization',
+        logging: logging !== false,
+        caching: Boolean(caching),
+        changelog: changelogConfig?.toKafkaConfig?.(resolvedName) ?? null
+      }
     });
 
     return definition;
@@ -143,7 +150,7 @@ class KTable {
     });
   }
 
-  _registerStateStore({ name, storeBuilder, keySerde, valueSerde }) {
+  _registerStateStore({ name, storeBuilder, keySerde, valueSerde, metadata = {} }) {
     if (!name) {
       throw new Error('Materialized state stores must include a name');
     }
@@ -154,12 +161,14 @@ class KTable {
       valueSerde,
       builder: storeBuilder,
       builderMetadata: storeBuilder.describe(),
+      metadata,
       describe: () => ({
         name,
         type: storeBuilder.type,
         keySerde: Boolean(keySerde),
         valueSerde: Boolean(valueSerde),
-        builder: storeBuilder.describe()
+        builder: storeBuilder.describe(),
+        metadata
       })
     };
 

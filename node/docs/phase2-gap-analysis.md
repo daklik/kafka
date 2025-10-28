@@ -53,6 +53,7 @@ Phase 2 focuses on achieving parity between the Java and Node.js Kafka Streams D
 4. Validate suppression semantics with deterministic tests and documentation updates.
 
 ### Step 6 – Topology Description Enhancements (P2)
+**Status:** ✅ Completed by enriching the topology graph with processor/store metadata, sink nodes, and descriptive edges validated against Node parity tests.
 1. Extend `TopologyDescription` to include table sources, join nodes, windowed processors, and state store metadata with partitioning details.
 2. Verify descriptions against snapshots derived from analogous Java topologies to ensure structural parity.
 3. Document the description format and how to leverage it for debugging complex DSL topologies.

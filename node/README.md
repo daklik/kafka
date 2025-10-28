@@ -239,6 +239,17 @@ Phase 1 introduces parity helpers inspired by the Java API:
 
 State store metadata includes changelog configuration hooks and caching/logging toggles, laying the groundwork for persistent stores in later phases.
 
+### Topology Description
+
+`StreamsBuilder.build()` now returns a topology graph with richly annotated nodes and edges:
+
+```js
+const { streams, topology } = builder.build();
+console.log(topology.nodes);
+```
+
+Each node records its processor type (`source`, `processor`, `table`, `global-table`, or `sink`), sanitized configuration, connected predecessors/successors, and any attached state stores. Stores expose changelog topics, logging/caching flags, window metadata, and partitioning scope (by-key vs. global) so you can compare the structure with Java's `Topology.describe()` output when debugging complex DSL pipelines.
+
 ### Runtime & Tasks
 
 A lightweight `TaskManager` tracks stream-to-partition assignments, rebalance events, and offset progression. The runtime surfaces this information for future cooperative rebalancing and fault tolerance work.
@@ -325,6 +336,7 @@ ainst the Node.js runtime and validates parity with Java word-count expectations
 
 - [Roadmap](docs/roadmap.md)
 - [Phase 1 Gap Analysis](docs/phase1-gap-analysis.md)
+- [Phase 2 Gap Analysis](docs/phase2-gap-analysis.md)
 
 ## License
 

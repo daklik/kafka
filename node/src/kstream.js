@@ -15,6 +15,7 @@ const { TimeWindows } = require('./windows/time-windows');
 const { SessionWindows } = require('./windows/session-windows');
 const { UnlimitedWindows } = require('./windows/unlimited-windows');
 const { Suppressed } = require('./suppressed');
+const { describeSerde, sanitizeValue } = require('./topology/utils');
 
 class KStream {
   constructor({
@@ -78,9 +79,18 @@ class KStream {
     const operationId = uuidv4();
     const operation = { id: operationId, type, fn, options };
     this.operations.push(operation);
-    const name = Named.from(options.named, `${type}-${operationId.slice(0, 6)}`);
-    this._topology.addNode({ id: operationId, name, type: 'processor', metadata: { operation: type, options: this._sanitizeTopologyOptions(options) } });
-    this._topology.connect(this._lastNodeId, operationId);
+    const fallbackName = `${type}-${operationId.slice(0, 6)}`;
+    const name = Named.from(options.named, fallbackName) ?? fallbackName;
+    this._topology.addNode({
+      id: operationId,
+      name,
+      type: 'processor',
+      metadata: {
+        operation: type,
+        options: this._sanitizeTopologyOptions(options)
+      }
+    });
+    this._topology.connect(this._lastNodeId, operationId, { type: 'processor', operation: type });
     this._lastNodeId = operationId;
     return operation;
   }
@@ -89,13 +99,9 @@ class KStream {
     if (!options) {
       return {};
     }
-    const sanitized = { ...options };
-    if (sanitized.fn || sanitized.predicate) {
-      sanitized.fn = '[function]';
-      sanitized.predicate = '[function]';
-    }
-    if (sanitized.streams) {
-      sanitized.streams = sanitized.streams.map(stream => stream.id ?? stream);
+    const sanitized = sanitizeValue(options);
+    if (Array.isArray(sanitized.streams)) {
+      sanitized.streams = sanitized.streams.map(stream => stream?.id ?? stream);
     }
     return sanitized;
   }
@@ -293,7 +299,7 @@ class KStream {
     });
 
     const storeName = resolved.storeName ?? `${windowSpec ? 'window' : 'agg'}-${uuidv4()}`;
-    const storeBuilder = this._coerceStoreBuilder({
+    const baseBuilder = this._coerceStoreBuilder({
       storeBuilder: resolved.storeBuilder,
       store: resolved.store,
       storeName,
@@ -306,14 +312,29 @@ class KStream {
       strategy: resolved.strategy ?? (windowSpec ? 'aggregate' : undefined)
     });
 
-    const metadata = windowSpec ? { window: windowSpec.metadata } : {};
+    let configuredBuilder = baseBuilder;
+    if (resolved.logging === false) {
+      configuredBuilder = configuredBuilder.withLoggingDisabled();
+    }
+    if (resolved.caching) {
+      configuredBuilder = configuredBuilder.withCachingEnabled();
+    }
+
+    const storeMetadata = windowSpec
+      ? {
+        type: 'windowed-aggregation-store',
+        window: windowSpec.metadata,
+        retentionMs: resolved.retention ?? windowSpec.retentionMs,
+        windowSizeMs: resolved.windowSize ?? windowSpec.windowSizeMs
+      }
+      : { type: 'aggregation-store' };
 
     this._registerStateStore({
       name: storeName,
-      storeBuilder,
+      storeBuilder: configuredBuilder,
       keySerde: resolved.keySerde ?? this.keySerde,
       valueSerde: resolved.valueSerde ?? this.valueSerde,
-      metadata
+      metadata: storeMetadata
     });
 
     const options = {
@@ -339,6 +360,25 @@ class KStream {
     if (windowSpec) {
       operation.windowInstance = windowSpec.instance;
     }
+
+    const builderMetadata = configuredBuilder.describe();
+    const descriptor = {
+      name: storeName,
+      type: builderMetadata.type,
+      keySerde: describeSerde(resolved.keySerde ?? this.keySerde),
+      valueSerde: describeSerde(resolved.valueSerde ?? this.valueSerde),
+      changelogTopic: builderMetadata.changelog?.topic ?? resolved.changelogTopic ?? null,
+      loggingEnabled: builderMetadata.loggingEnabled,
+      cachingEnabled: builderMetadata.cachingEnabled,
+      partitioning: 'by-key',
+      retentionMs: storeMetadata.retentionMs ?? null,
+      windowSizeMs: storeMetadata.windowSizeMs ?? null,
+      windowType: windowSpec?.type ?? null,
+      scope: storeMetadata.type,
+      metadata: storeMetadata
+    };
+
+    this._topology.attachStateStore(operation.id, descriptor);
 
     return this;
   }
@@ -545,13 +585,34 @@ class KStream {
     if (!topic) {
       throw new Error('Output topic must be provided when calling to()');
     }
+    const sinkId = uuidv4();
+    const fallbackName = `sink-${topic}`;
+    const sinkName = Named.from(options.named, fallbackName) ?? fallbackName;
+    const partitioner = typeof options.partitioner === 'function' ? '[function]' : options.partitioner ?? null;
+    this._topology.addNode({
+      id: sinkId,
+      name: sinkName,
+      type: 'sink',
+      metadata: {
+        topic,
+        keySerde: describeSerde(options.keySerde ?? this.keySerde),
+        valueSerde: describeSerde(options.valueSerde ?? this.valueSerde),
+        partitioner
+      }
+    });
+    this._topology.connect(this._lastNodeId, sinkId, {
+      type: 'sink',
+      topic,
+      partitioner
+    });
     this.sinks.push({
       type: 'topic',
       topic,
       keySerde: options.keySerde ?? this.keySerde,
       valueSerde: options.valueSerde ?? this.valueSerde,
       partitioner: options.partitioner,
-      named: options.named
+      named: options.named,
+      topologyNodeId: sinkId
     });
     return this;
   }
@@ -681,13 +742,29 @@ class KStream {
         name: thisStoreName,
         storeBuilder: thisStoreBuilder,
         keySerde: joinedOptions.keySerde ?? this.keySerde,
-        valueSerde: this.valueSerde
+        valueSerde: this.valueSerde,
+        metadata: {
+          type: 'join-buffer-store',
+          joinId,
+          role: 'this-stream',
+          partnerStreamId: otherStream.id,
+          retentionMs,
+          window: windowSpec.metadata
+        }
       });
       otherStream._registerStateStore({
         name: otherStoreName,
         storeBuilder: otherStoreBuilder,
         keySerde: joinedOptions.keySerde ?? otherStream.keySerde,
-        valueSerde: otherStream.valueSerde
+        valueSerde: otherStream.valueSerde,
+        metadata: {
+          type: 'join-buffer-store',
+          joinId,
+          role: 'other-stream',
+          partnerStreamId: this.id,
+          retentionMs,
+          window: windowSpec.metadata
+        }
       });
       otherStream._registerJoinBuffer({
         joinId,
@@ -726,6 +803,67 @@ class KStream {
       joinOperation.windowInstance = streamJoinConfig.window.instance;
     }
     joinOperation.targetStreamId = otherStream.id;
+
+    if (streamJoinConfig) {
+      const thisStore = this.stateStores.get(streamJoinConfig.thisStoreName);
+      if (thisStore) {
+        const builderMetadata = thisStore.builderMetadata ?? thisStore.builder.describe();
+        this._topology.attachStateStore(joinOperation.id, {
+          name: thisStore.name,
+          type: builderMetadata.type,
+          keySerde: describeSerde(thisStore.keySerde ?? this.keySerde),
+          valueSerde: describeSerde(thisStore.valueSerde ?? this.valueSerde),
+          changelogTopic: builderMetadata.changelog?.topic ?? null,
+          loggingEnabled: builderMetadata.loggingEnabled,
+          cachingEnabled: builderMetadata.cachingEnabled,
+          partitioning: 'by-key',
+          retentionMs: streamJoinConfig.retentionMs,
+          windowSizeMs: streamJoinConfig.window.windowSizeMs,
+          windowType: streamJoinConfig.window.metadata?.type ?? null,
+          scope: 'stream-stream-join',
+          metadata: this._sanitizeTopologyOptions(thisStore.metadata)
+        });
+      }
+
+      this._topology.annotateNode(joinOperation.id, {
+        join: {
+          type,
+          partnerStreamId: otherStream.id,
+          window: streamJoinConfig.window.metadata,
+          retentionMs: streamJoinConfig.retentionMs
+        }
+      });
+    } else if (isTableLike) {
+      const tableStore = otherStream?.stateStores?.get?.(storeName);
+      if (tableStore) {
+        const builderMetadata = tableStore.builderMetadata ?? tableStore.builder.describe();
+        this._topology.attachStateStore(joinOperation.id, {
+          name: tableStore.name,
+          type: builderMetadata.type,
+          keySerde: describeSerde(tableStore.keySerde ?? otherStream.keySerde),
+          valueSerde: describeSerde(tableStore.valueSerde ?? otherStream.valueSerde),
+          changelogTopic: builderMetadata.changelog?.topic ?? otherStream.materialized?.changelogTopic ?? null,
+          loggingEnabled: builderMetadata.loggingEnabled,
+          cachingEnabled: builderMetadata.cachingEnabled,
+          partitioning: otherStream.isGlobalKTable ? 'global' : 'by-key',
+          scope: otherStream.isGlobalKTable ? 'global-table-lookup' : 'table-lookup',
+          metadata: this._sanitizeTopologyOptions({
+            tableSource: otherStream.sourceTopic,
+            tableType: otherStream.isGlobalKTable ? 'global' : 'table'
+          })
+        });
+      }
+
+      this._topology.annotateNode(joinOperation.id, {
+        join: {
+          type,
+          partnerStreamId: otherStream.id,
+          lookupStore: storeName,
+          partnerType: otherStreamType
+        }
+      });
+    }
+
     return this;
   }
 

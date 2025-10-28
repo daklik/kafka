@@ -5,6 +5,7 @@ const { KStream } = require('./kstream');
 const { KTable, GlobalKTable } = require('./ktable');
 const { TopologyDescription } = require('./topology/topology-description');
 const { Named } = require('./named');
+const { describeSerde } = require('./topology/utils');
 
 class StreamsBuilder {
   constructor() {
@@ -23,14 +24,42 @@ class StreamsBuilder {
         id: stream.id,
         name: stream.nodeName,
         type: 'processor',
-        metadata: { origin: stream.origin }
+        metadata: {
+          origin: stream.origin,
+          keySerde: describeSerde(stream.keySerde),
+          valueSerde: describeSerde(stream.valueSerde)
+        }
       });
       if (parentOperationId) {
-        this._topology.connect(parentOperationId, stream.id);
+        this._topology.connect(parentOperationId, stream.id, this._edgeMetadataForStream(stream));
       } else if (stream.parent) {
-        this._topology.connect(stream.parent.id, stream.id);
+        this._topology.connect(stream.parent.id, stream.id, this._edgeMetadataForStream(stream));
       }
     }
+  }
+
+  _edgeMetadataForStream(stream) {
+    if (!stream?.origin) {
+      return { type: 'forward' };
+    }
+
+    if (stream.origin.type === 'branch') {
+      return { type: 'branch', branchIndex: stream.origin.index, branchName: stream.origin.name };
+    }
+
+    if (stream.origin.type === 'repartition') {
+      return { type: 'repartition', topic: stream.origin.topic };
+    }
+
+    if (stream.origin.type === 'join') {
+      return { type: 'join', partnerStreamId: stream.origin.partner };
+    }
+
+    if (stream.origin.type === 'table' || stream.origin.type === 'globalTable') {
+      return { type: stream.origin.type };
+    }
+
+    return { type: stream.origin.type };
   }
 
   stream(topic, options = {}) {
@@ -57,7 +86,12 @@ class StreamsBuilder {
       id: stream.id,
       name: nodeName,
       type: 'source',
-      metadata: { topic, fromBeginning: options.fromBeginning ?? false }
+      metadata: {
+        topic,
+        fromBeginning: options.fromBeginning ?? false,
+        keySerde: describeSerde(options.keySerde),
+        valueSerde: describeSerde(options.valueSerde)
+      }
     });
     return stream;
   }
@@ -91,6 +125,8 @@ class StreamsBuilder {
       metadata: {
         topic,
         tableType: 'table',
+        keySerde: describeSerde(options.keySerde),
+        valueSerde: describeSerde(options.valueSerde),
         materialized: {
           storeName: table.materialized.storeName,
           changelogTopic: table.materialized.changelogTopic,
@@ -99,6 +135,22 @@ class StreamsBuilder {
         }
       }
     });
+    const tableStore = table.stateStores.get(table.materialized.storeName);
+    if (tableStore) {
+      const builderMetadata = tableStore.builderMetadata ?? tableStore.builder.describe();
+      this._topology.attachStateStore(table.id, {
+        name: tableStore.name,
+        type: builderMetadata.type,
+        keySerde: describeSerde(tableStore.keySerde ?? options.keySerde),
+        valueSerde: describeSerde(tableStore.valueSerde ?? options.valueSerde),
+        changelogTopic: table.materialized.changelogTopic,
+        loggingEnabled: builderMetadata.loggingEnabled,
+        cachingEnabled: builderMetadata.cachingEnabled,
+        partitioning: 'by-key',
+        scope: 'table-materialization',
+        metadata: tableStore.metadata ?? {}
+      });
+    }
     return table;
   }
 
@@ -130,6 +182,8 @@ class StreamsBuilder {
       metadata: {
         topic,
         tableType: 'global',
+        keySerde: describeSerde(options.keySerde),
+        valueSerde: describeSerde(options.valueSerde),
         materialized: {
           storeName: table.materialized.storeName,
           changelogTopic: table.materialized.changelogTopic,
@@ -138,6 +192,22 @@ class StreamsBuilder {
         }
       }
     });
+    const globalStore = table.stateStores.get(table.materialized.storeName);
+    if (globalStore) {
+      const builderMetadata = globalStore.builderMetadata ?? globalStore.builder.describe();
+      this._topology.attachStateStore(table.id, {
+        name: globalStore.name,
+        type: builderMetadata.type,
+        keySerde: describeSerde(globalStore.keySerde ?? options.keySerde),
+        valueSerde: describeSerde(globalStore.valueSerde ?? options.valueSerde),
+        changelogTopic: table.materialized.changelogTopic,
+        loggingEnabled: builderMetadata.loggingEnabled,
+        cachingEnabled: builderMetadata.cachingEnabled,
+        partitioning: 'global',
+        scope: 'global-table-materialization',
+        metadata: globalStore.metadata ?? {}
+      });
+    }
     return table;
   }
 
