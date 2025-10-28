@@ -62,7 +62,7 @@ Transformation and branching primitives mirror the Java DSL:
 - `filter(predicate)` / `filterNot(predicate)`
 - `flatMap(mapper)` / `flatMapValues(mapper)`
 - `peek(sideEffect)` / `foreach(sideEffect)`
-- `groupBy(selector)` / `groupByKey()`
+- `groupBy(selector)` / `groupByKey()` returning a `KGroupedStream` for windowed aggregations
 - `aggregate(initializer, aggregator, options)` / `count(options)` / `reduce(reducer, options)`
 - `branch(...predicates)`
 - `repartition(options)`
@@ -129,7 +129,33 @@ purchases
   .to('purchases-with-clicks', { valueSerde: Serde.json() });
 ```
 
-By default the window grace period matches Java's 24 hour default; override it with `.grace(ms)` on the window specification. Additional window types become available as the Phase 2 roadmap progresses.
+By default the window grace period matches Java's 24 hour default; override it with `.grace(ms)` on the window specification. The DSL now exposes `TimeWindows`, `SessionWindows`, `UnlimitedWindows`, and `SlidingWindows` for aggregation and join use cases.
+
+#### Windowed Aggregations
+
+Grouping operations return a `KGroupedStream` so you can apply windowed aggregations with Java-parity semantics. Tumbling and hopping windows use `windows.TimeWindows`, sliding windows use `windows.SlidingWindows`, and session windows rely on `windows.SessionWindows` (with default session mergers for `count` and `reduce`). Unlimited windows provide open-ended aggregates that emit on each update.
+
+```js
+const { StreamsBuilder, Serde, windows } = require('kafka-streams-node');
+
+const builder = new StreamsBuilder();
+
+builder
+  .stream('orders-topic', { keySerde: Serde.string(), valueSerde: Serde.json() })
+  .groupBy(order => order.category)
+  .windowedBy(windows.TimeWindows.of(60_000).advanceBy(30_000))
+  .count({ keySerde: Serde.string(), storeName: 'category-counts' })
+  .to('category-counts-topic', { keySerde: Serde.json(), valueSerde: Serde.json() });
+
+builder
+  .stream('sessions-topic', { keySerde: Serde.string(), valueSerde: Serde.json() })
+  .groupBy(value => value.userId)
+  .windowedBy(windows.SessionWindows.with(5_000))
+  .reduce((left, right) => ({ ...left, ...right }), { keySerde: Serde.string(), storeName: 'user-sessions' })
+  .to('user-sessions-topic', { keySerde: Serde.json(), valueSerde: Serde.json() });
+```
+
+Windowed stores are registered with the interactive query service and include metadata describing the window type, retention, and changelog configuration so remote instances can route queries to the correct host.
 
 ### KafkaStreams
 

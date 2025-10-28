@@ -25,11 +25,11 @@ const Stores = {
     });
   },
 
-  inMemoryWindowStore(name, { retention, windowSize } = {}) {
+  inMemoryWindowStore(name, { retention, windowSize, strategy } = {}) {
     return new StoreBuilder({
       name,
       type: 'window',
-      supplier: () => new MemoryWindowStore(name, { retention, windowSize }),
+      supplier: () => new MemoryWindowStore(name, { retention, windowSize, strategy }),
       loggingEnabled: false
     });
   },

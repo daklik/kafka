@@ -11,6 +11,7 @@ const { StreamsConfig } = require('./config/streams-config');
 const { KTable, GlobalKTable } = require('./ktable');
 const { Joined } = require('./joined');
 const { ValueJoiner } = require('./value-joiner');
+const { KGroupedStream } = require('./kgrouped-stream');
 const windows = require('./windows');
 const metrics = require('./metrics');
 const errors = require('./errors');
@@ -26,6 +27,7 @@ module.exports = {
   GlobalKTable,
   Joined,
   ValueJoiner,
+  KGroupedStream,
   TaskManager,
   StreamsConfig,
   metrics,
@@ -34,5 +36,8 @@ module.exports = {
   windows,
   JoinWindows: windows.JoinWindows,
   SlidingWindows: windows.SlidingWindows,
+  TimeWindows: windows.TimeWindows,
+  SessionWindows: windows.SessionWindows,
+  UnlimitedWindows: windows.UnlimitedWindows,
   ...state
 };

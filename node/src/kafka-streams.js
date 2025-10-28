@@ -346,6 +346,10 @@ class KafkaStreams extends EventEmitter {
       throw new Error(`State store ${operation.options.storeName} was not initialised`);
     }
 
+    if (operation.options.windowType) {
+      return this._applyWindowAggregate(operation, records, store);
+    }
+
     const results = [];
 
     for (const record of records) {
@@ -375,6 +379,130 @@ class KafkaStreams extends EventEmitter {
     }
 
     return results;
+  }
+
+  async _applyWindowAggregate(operation, records, store) {
+    const windowType = operation.options.windowType;
+    const windowInstance = operation.windowInstance;
+    if (!windowInstance) {
+      throw new Error('Windowed aggregation missing window definition');
+    }
+
+    const retentionMs = operation.options.windowRetentionMs ?? (typeof windowInstance.retentionPeriod === 'function' ? windowInstance.retentionPeriod() : null);
+    const results = [];
+
+    for (const record of records) {
+      const timestamp = record.timestamp ?? Date.now();
+      if (retentionMs && Number.isFinite(retentionMs) && typeof store.purge === 'function') {
+        await store.purge(timestamp - retentionMs);
+      }
+
+      const key = record.key;
+      if (key == null) {
+        continue;
+      }
+
+      if (windowType === 'session') {
+        const emitted = await this._applySessionWindowAggregate({ operation, record, store, timestamp, key });
+        if (emitted) {
+          results.push(emitted);
+        }
+        continue;
+      }
+
+      const windows = this._resolveRecordWindows(windowType, windowInstance, timestamp);
+      for (const window of windows) {
+        const entryStart = Number.isFinite(window.start) ? window.start : Number.MIN_SAFE_INTEGER;
+        const contextRecord = { ...record, window };
+        const existing = typeof store.get === 'function' ? await store.get(key, entryStart) : null;
+        let current = existing?.value;
+        if (current === undefined) {
+          current = await operation.options.initializer(key, contextRecord);
+        }
+        const updated = await operation.fn(current, record.value, contextRecord);
+        const outputKey = { key, window };
+
+        if (updated === null || updated === undefined) {
+          if (typeof store.delete === 'function') {
+            await store.delete(key, entryStart);
+          }
+          if (operation.options.emitOnUpdate) {
+            results.push({ ...record, key: outputKey, value: null, timestamp: window.end ?? timestamp });
+          }
+        } else {
+          if (typeof store.put === 'function') {
+            await store.put(key, updated, entryStart, { end: window.end });
+          }
+          if (operation.options.emitOnUpdate) {
+            results.push({ ...record, key: outputKey, value: updated, timestamp: window.end ?? timestamp });
+          }
+        }
+      }
+    }
+
+    return results;
+  }
+
+  _resolveRecordWindows(windowType, windowInstance, timestamp) {
+    if (windowType === 'time') {
+      return windowInstance.windowsFor(timestamp);
+    }
+    if (windowType === 'sliding') {
+      const bounds = windowInstance.bounds(timestamp);
+      return [{ start: bounds.start, end: bounds.end }];
+    }
+    if (windowType === 'unlimited') {
+      return windowInstance.windowsFor(timestamp).map(window => ({
+        start: Number.isFinite(window.start) ? window.start : Number.MIN_SAFE_INTEGER,
+        end: window.end
+      }));
+    }
+    throw new Error(`Unsupported window type ${windowType}`);
+  }
+
+  async _applySessionWindowAggregate({ operation, record, store, timestamp, key }) {
+    const gapMs = operation.options.sessionGap ?? 0;
+    const sessionMerger = operation.options.sessionMerger;
+    if (typeof sessionMerger !== 'function') {
+      throw new Error('Session window aggregations require a sessionMerger function');
+    }
+
+    const contextRecord = { ...record, window: { start: timestamp, end: timestamp } };
+    let aggregate = await operation.options.initializer(key, contextRecord);
+    aggregate = await operation.fn(aggregate, record.value, contextRecord);
+
+    const overlapStart = timestamp - gapMs;
+    const overlapEnd = timestamp + gapMs;
+    const overlapping = typeof store.fetch === 'function' ? await store.fetch(key, overlapStart, overlapEnd) : [];
+
+    let sessionStart = timestamp;
+    let sessionEnd = timestamp;
+
+    for (const session of overlapping) {
+      const start = session.timestamp ?? session.start ?? session.window?.start ?? timestamp;
+      const end = session.end ?? session.window?.end ?? session.timestamp ?? timestamp;
+      sessionStart = Math.min(sessionStart, start);
+      sessionEnd = Math.max(sessionEnd, end);
+      aggregate = await sessionMerger(session.value, aggregate);
+      if (typeof store.delete === 'function') {
+        await store.delete(key, start);
+      }
+    }
+
+    if (typeof store.put === 'function') {
+      await store.put(key, aggregate, sessionStart, { end: sessionEnd });
+    }
+
+    if (!operation.options.emitOnUpdate) {
+      return null;
+    }
+
+    return {
+      ...record,
+      key: { key, window: { start: sessionStart, end: sessionEnd } },
+      value: aggregate,
+      timestamp: sessionEnd
+    };
   }
 
   async _applyThrough(stream, operation, records, producer, headers, timestamp) {

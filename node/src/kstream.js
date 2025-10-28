@@ -7,9 +7,13 @@ const { Materialized } = require('./materialized');
 const { Named } = require('./named');
 const { Joined } = require('./joined');
 const { ValueJoiner } = require('./value-joiner');
+const { KGroupedStream } = require('./kgrouped-stream');
 const { MemoryWindowStore } = require('./state/memory-window-store');
 const { JoinWindows } = require('./windows/join-windows');
 const { SlidingWindows } = require('./windows/sliding-windows');
+const { TimeWindows } = require('./windows/time-windows');
+const { SessionWindows } = require('./windows/session-windows');
+const { UnlimitedWindows } = require('./windows/unlimited-windows');
 
 class KStream {
   constructor({
@@ -95,14 +99,14 @@ class KStream {
     return sanitized;
   }
 
-  _resolveMaterialized(materializedOrOptions = {}) {
+  _resolveMaterialized(materializedOrOptions = {}, defaults = {}) {
     if (materializedOrOptions instanceof Materialized) {
-      return materializedOrOptions.resolve();
+      return materializedOrOptions.resolve(defaults);
     }
     if (materializedOrOptions.materialized instanceof Materialized) {
-      return materializedOrOptions.materialized.resolve(materializedOrOptions);
+      return materializedOrOptions.materialized.resolve({ ...defaults, ...materializedOrOptions });
     }
-    return materializedOrOptions;
+    return { ...defaults, ...(materializedOrOptions ?? {}) };
   }
 
   _resolveJoined(joinedOrOptions = {}, otherStream) {
@@ -139,24 +143,162 @@ class KStream {
     };
   }
 
-  _coerceStoreBuilder({ storeBuilder, store, storeName, changelogConfig, logging = true }) {
+  _coerceStoreBuilder({
+    storeBuilder,
+    store,
+    storeName,
+    changelogConfig,
+    logging = true,
+    caching = false,
+    storeType = 'keyValue',
+    retention,
+    windowSize,
+    strategy
+  }) {
     if (storeBuilder instanceof StoreBuilder) {
       return storeBuilder;
     }
     if (store instanceof StoreBuilder) {
       return store;
     }
-    const supplier = typeof store === 'function' ? store : () => new MemoryStateStore(storeName);
+    let supplier = store;
+    if (typeof supplier !== 'function') {
+      if (storeType === 'window') {
+        supplier = () => new MemoryWindowStore(storeName, { retention, windowSize, strategy, loggingEnabled: logging });
+      } else {
+        supplier = () => new MemoryStateStore(storeName);
+      }
+    }
     return new StoreBuilder({
       name: storeName,
-      type: 'keyValue',
+      type: storeType,
       supplier,
       loggingEnabled: logging,
+      cachingEnabled: caching,
       changelogConfig
     });
   }
 
-  _registerStateStore({ name, storeBuilder, keySerde, valueSerde }) {
+  _normalizeAggregationWindow(windowDefinition) {
+    if (!windowDefinition) {
+      return null;
+    }
+    if (windowDefinition instanceof TimeWindows) {
+      return {
+        type: 'time',
+        instance: windowDefinition,
+        retentionMs: windowDefinition.retentionPeriod(),
+        windowSizeMs: windowDefinition.windowSize(),
+        metadata: windowDefinition.describe()
+      };
+    }
+    if (windowDefinition instanceof SlidingWindows) {
+      return {
+        type: 'sliding',
+        instance: windowDefinition,
+        retentionMs: windowDefinition.retentionPeriod(),
+        windowSizeMs: windowDefinition.windowSize(),
+        metadata: windowDefinition.describe()
+      };
+    }
+    if (windowDefinition instanceof SessionWindows) {
+      return {
+        type: 'session',
+        instance: windowDefinition,
+        retentionMs: windowDefinition.retentionPeriod(),
+        metadata: windowDefinition.describe(),
+        gapMs: windowDefinition.gap()
+      };
+    }
+    if (windowDefinition instanceof UnlimitedWindows) {
+      return {
+        type: 'unlimited',
+        instance: windowDefinition,
+        retentionMs: windowDefinition.retentionPeriod(),
+        metadata: windowDefinition.describe()
+      };
+    }
+    throw new Error('Unsupported window definition provided for aggregation');
+  }
+
+  _registerAggregation({
+    initializer,
+    aggregator,
+    materializedOrOptions = {},
+    windowSpec = null,
+    defaultSessionMerger = null,
+    valueSerde
+  }) {
+    if (typeof initializer !== 'function') {
+      throw new Error('aggregate expects an initializer function');
+    }
+    if (typeof aggregator !== 'function') {
+      throw new Error('aggregate expects an aggregator function');
+    }
+
+    const resolved = this._resolveMaterialized(materializedOrOptions, {
+      storeType: windowSpec ? 'window' : 'keyValue',
+      retention: windowSpec?.retentionMs,
+      windowSize: windowSpec?.windowSizeMs,
+      strategy: windowSpec ? 'aggregate' : undefined,
+      keySerde: this.keySerde,
+      valueSerde: valueSerde ?? this.valueSerde,
+      emitOnUpdate: materializedOrOptions.emitOnUpdate,
+      named: materializedOrOptions.named
+    });
+
+    const storeName = resolved.storeName ?? `${windowSpec ? 'window' : 'agg'}-${uuidv4()}`;
+    const storeBuilder = this._coerceStoreBuilder({
+      storeBuilder: resolved.storeBuilder,
+      store: resolved.store,
+      storeName,
+      changelogConfig: resolved.changelogConfig,
+      logging: resolved.logging ?? true,
+      caching: resolved.caching ?? false,
+      storeType: resolved.storeType ?? (windowSpec ? 'window' : 'keyValue'),
+      retention: resolved.retention ?? windowSpec?.retentionMs,
+      windowSize: resolved.windowSize ?? windowSpec?.windowSizeMs,
+      strategy: resolved.strategy ?? (windowSpec ? 'aggregate' : undefined)
+    });
+
+    const metadata = windowSpec ? { window: windowSpec.metadata } : {};
+
+    this._registerStateStore({
+      name: storeName,
+      storeBuilder,
+      keySerde: resolved.keySerde ?? this.keySerde,
+      valueSerde: resolved.valueSerde ?? this.valueSerde,
+      metadata
+    });
+
+    const options = {
+      storeName,
+      initializer,
+      emitOnUpdate: resolved.emitOnUpdate ?? true,
+      named: resolved.named,
+      window: windowSpec?.metadata ?? null,
+      windowType: windowSpec?.type ?? null,
+      windowRetentionMs: windowSpec?.retentionMs ?? null
+    };
+
+    if (windowSpec?.type === 'session') {
+      const merger = materializedOrOptions.sessionMerger ?? materializedOrOptions.merger ?? defaultSessionMerger;
+      if (typeof merger !== 'function') {
+        throw new Error('Session window aggregations require a sessionMerger function');
+      }
+      options.sessionMerger = merger;
+      options.sessionGap = windowSpec.gapMs;
+    }
+
+    const operation = this._appendOperation('aggregate', aggregator, options);
+    if (windowSpec) {
+      operation.windowInstance = windowSpec.instance;
+    }
+
+    return this;
+  }
+
+  _registerStateStore({ name, storeBuilder, keySerde, valueSerde, metadata = {} }) {
     if (!name) {
       throw new Error('State store definition must include a name');
     }
@@ -165,12 +307,15 @@ class KStream {
       builder: storeBuilder,
       keySerde,
       valueSerde,
+      metadata,
+      builderMetadata: storeBuilder.describe(),
       describe: () => ({
         name,
         type: storeBuilder.type,
         keySerde: Boolean(keySerde),
         valueSerde: Boolean(valueSerde),
-        builder: storeBuilder.describe()
+        builder: storeBuilder.describe(),
+        metadata
       })
     };
     this.stateStores.set(name, definition);
@@ -264,7 +409,7 @@ class KStream {
 
   groupByKey(options = {}) {
     this._appendOperation('groupBy', (value, record) => record.key ?? value?.key, options);
-    return this;
+    return new KGroupedStream(this);
   }
 
   groupBy(selector, options = {}) {
@@ -272,52 +417,24 @@ class KStream {
       throw new Error('groupBy expects a selector function');
     }
     this._appendOperation('groupBy', selector, options);
-    return this;
+    return new KGroupedStream(this);
   }
 
   aggregate(initializer, aggregator, materializedOrOptions = {}) {
-    if (typeof initializer !== 'function') {
-      throw new Error('aggregate expects an initializer function');
-    }
-    if (typeof aggregator !== 'function') {
-      throw new Error('aggregate expects an aggregator function');
-    }
-
-    const resolved = this._resolveMaterialized(materializedOrOptions);
-    const storeName = resolved.storeName ?? `agg-${uuidv4()}`;
-    const storeBuilder = this._coerceStoreBuilder({
-      storeBuilder: resolved.storeBuilder,
-      store: resolved.store ?? (() => new MemoryStateStore(storeName)),
-      storeName,
-      logging: resolved.logging ?? true,
-      changelogConfig: resolved.changelogConfig
-    });
-
-    this._registerStateStore({
-      name: storeName,
-      storeBuilder,
-      keySerde: resolved.keySerde ?? this.keySerde,
-      valueSerde: resolved.valueSerde ?? this.valueSerde
-    });
-
-    this._appendOperation('aggregate', aggregator, {
-      storeName,
-      initializer,
-      emitOnUpdate: resolved.emitOnUpdate ?? true,
-      named: resolved.named
-    });
-
-    return this;
+    return this._registerAggregation({ initializer, aggregator, materializedOrOptions });
   }
 
   count(materializedOrOptions = {}) {
-    return this.aggregate(
-      () => 0,
-      (aggregate) => (aggregate ?? 0) + 1,
-      materializedOrOptions instanceof Materialized
-        ? materializedOrOptions.withValueSerde(materializedOrOptions.valueSerde ?? null)
-        : { ...materializedOrOptions, valueSerde: materializedOrOptions.valueSerde ?? null }
-    );
+    const materialized = materializedOrOptions instanceof Materialized
+      ? materializedOrOptions.withValueSerde(materializedOrOptions.valueSerde ?? null)
+      : { ...materializedOrOptions, valueSerde: materializedOrOptions.valueSerde ?? null };
+
+    return this._registerAggregation({
+      initializer: () => 0,
+      aggregator: (aggregate) => (aggregate ?? 0) + 1,
+      materializedOrOptions: materialized,
+      defaultSessionMerger: (left, right) => (left ?? 0) + (right ?? 0)
+    });
   }
 
   reduce(reducer, materializedOrOptions = {}) {
@@ -325,16 +442,17 @@ class KStream {
       throw new Error('reduce expects a reducer function');
     }
 
-    return this.aggregate(
-      () => undefined,
-      (aggregate, value, record) => {
+    return this._registerAggregation({
+      initializer: () => undefined,
+      aggregator: (aggregate, value, record) => {
         if (aggregate === undefined) {
           return value;
         }
         return reducer(aggregate, value, record);
       },
-      materializedOrOptions
-    );
+      materializedOrOptions,
+      defaultSessionMerger: reducer
+    });
   }
 
   through(topic, options = {}) {

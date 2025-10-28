@@ -10,10 +10,10 @@ Phase 2 focuses on achieving parity between the Java and Node.js Kafka Streams D
 - **Test Coverage**: Back each feature with regression tests that mirror the Java integration suite, reusing or expanding the cross-language fixtures introduced in Phase 1.
 
 ## 2. Current Node.js Baseline
-- `StreamsBuilder` and `KStream` support stateless transforms, branching, repartitioning, aggregation scaffolding, and materialization helpers.
-- `KTable` and `GlobalKTable` abstractions are not implemented; joins and suppress operators are stubs.
-- Window definitions (`TimeWindows`, `SessionWindows`, `UnlimitedWindows`) are absent, and aggregation flows assume unwindowed processing.
-- Topology descriptions report basic node linkage but omit windowed processors, joins, and table metadata.
+- `StreamsBuilder` and `KStream` support stateless transforms, branching, repartitioning, aggregation scaffolding, materialization helpers, stream-table joins, and stream-stream joins with window buffering.
+- `KTable` and `GlobalKTable` abstractions are implemented with materialized stores wired into the interactive query layer.
+- Window definitions (`TimeWindows`, `SessionWindows`, `UnlimitedWindows`, `SlidingWindows`) exist for joins and aggregations, and grouping operations expose `KGroupedStream` windowed aggregations with in-memory window/session stores.
+- Topology descriptions report basic node linkage but still omit detailed windowed processor metadata and partitioning information.
 
 ## 3. Step-by-Step Plan
 
@@ -39,10 +39,11 @@ Phase 2 focuses on achieving parity between the Java and Node.js Kafka Streams D
 4. Add regression tests verifying join output ordering and window boundaries, cross-checking against Java fixtures.
 
 ### Step 4 – Add Windowed Aggregations (P1)
-1. Introduce window types (`TimeWindows`, `SessionWindows`, `UnlimitedWindows`) and shared validation utilities.
-2. Extend `KStream#groupByKey` and `KGroupedStream` aggregations (`count`, `aggregate`, `reduce`) to accept window definitions.
-3. Implement windowed state stores with segment retention, caching, and query integration via interactive query API.
-4. Provide fixtures covering tumbling, hopping, sliding, and session windows with expected results sourced from the Java suite.
+**Status:** ✅ Completed with DSL parity for tumbling, hopping, sliding, session, and unlimited windowed aggregations.
+1. Introduced reusable window types (`TimeWindows`, `SessionWindows`, `UnlimitedWindows`) plus validation helpers shared across join and aggregation flows.
+2. Extended grouping APIs so `groupBy`/`groupByKey` return a `KGroupedStream` that exposes window-aware `count`, `aggregate`, and `reduce` operators (including default session mergers).
+3. Implemented windowed state stores with retention-aware purge, interactive-query metadata, and support for append/aggregate storage strategies.
+4. Added regression fixtures and tests covering tumbling, hopping, sliding, session, and unlimited windows aligned with Java reference expectations.
 
 ### Step 5 – Suppression and Final Results (P2)
 1. Port the `Suppressed` builder (`Suppressed.java`) with configuration for emit strategies (e.g., `untilWindowCloses`).
