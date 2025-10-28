@@ -157,6 +157,28 @@ builder
 
 Windowed stores are registered with the interactive query service and include metadata describing the window type, retention, and changelog configuration so remote instances can route queries to the correct host.
 
+#### Suppression and Final Results
+
+Windowed aggregations emit an update for every incoming record by default. Apply `suppress` after a windowed aggregation to buffer intermediate updates and emit a single final result once the window closes (or when the buffer reaches a configured bound).
+
+```js
+const { StreamsBuilder, Serde, windows, Suppressed } = require('kafka-streams-node');
+
+builder
+  .stream('orders-topic', { keySerde: Serde.string(), valueSerde: Serde.json() })
+  .groupBy(order => order.category)
+  .windowedBy(windows.TimeWindows.of(60_000).grace(5_000))
+  .count({ keySerde: Serde.string(), storeName: 'category-counts' })
+  .suppress(
+    Suppressed.untilWindowCloses(
+      Suppressed.BufferConfig.bounded(1, { emitEarlyWhenFull: true })
+    )
+  )
+  .to('final-category-counts', { keySerde: Serde.json(), valueSerde: Serde.json() });
+```
+
+Use `Suppressed.untilWindowCloses()` for the common Java parity behaviour or provide a bounded buffer config to force early emission when the holding buffer reaches capacity. Late arrivals that exceed the window grace period are dropped and recorded in the metrics registry so operators can monitor how frequently suppressed results discard late data.
+
 ### KafkaStreams
 
 - `new KafkaStreams(builderOrTopology, config)`
@@ -281,6 +303,13 @@ const kafkaStreams = new KafkaStreams(builder, {
   productionExceptionHandler: new errors.LogAndFailExceptionHandler()
 });
 ```
+
+Suppression-aware topologies emit additional samples so operators can observe buffering behaviour:
+
+- `stream.records.suppressed` – number of intermediate results held back by suppression.
+- `stream.records.suppressed.flushed` – number of buffered results emitted once a window closes or the buffer forces an early flush.
+- `stream.records.late` – late arrivals dropped for falling outside the configured window grace period.
+- `stream.suppression.buffer.overflow` – records dropped because a bounded buffer could not accept additional entries.
 
 ## Development
 

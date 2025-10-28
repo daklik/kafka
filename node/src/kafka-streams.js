@@ -238,6 +238,9 @@ class KafkaStreams extends EventEmitter {
         case 'aggregate':
           records = await this._applyAggregate(operation, records, stores);
           break;
+        case 'suppress':
+          records = await this._applySuppress(stream, operation, records);
+          break;
         case 'through':
           records = await this._applyThrough(stream, operation, records, producer, headers, timestamp);
           break;
@@ -393,6 +396,7 @@ class KafkaStreams extends EventEmitter {
 
     for (const record of records) {
       const timestamp = record.timestamp ?? Date.now();
+      const eventTimestamp = record.eventTimestamp ?? timestamp;
       if (retentionMs && Number.isFinite(retentionMs) && typeof store.purge === 'function') {
         await store.purge(timestamp - retentionMs);
       }
@@ -427,20 +431,184 @@ class KafkaStreams extends EventEmitter {
             await store.delete(key, entryStart);
           }
           if (operation.options.emitOnUpdate) {
-            results.push({ ...record, key: outputKey, value: null, timestamp: window.end ?? timestamp });
+            results.push({ ...record, key: outputKey, value: null, timestamp: window.end ?? timestamp, eventTimestamp });
           }
         } else {
           if (typeof store.put === 'function') {
             await store.put(key, updated, entryStart, { end: window.end });
           }
           if (operation.options.emitOnUpdate) {
-            results.push({ ...record, key: outputKey, value: updated, timestamp: window.end ?? timestamp });
+            results.push({ ...record, key: outputKey, value: updated, timestamp: window.end ?? timestamp, eventTimestamp });
           }
         }
       }
     }
 
     return results;
+  }
+
+  async _applySuppress(stream, operation, records) {
+    const strategy = operation.options?.strategy ?? 'untilWindowCloses';
+    const windowType = operation.options?.windowType;
+    if (!records.length || strategy !== 'untilWindowCloses' || !windowType) {
+      return records;
+    }
+
+    if (!operation._buffer) {
+      operation._buffer = new Map();
+    }
+    if (typeof operation._streamTime !== 'number') {
+      operation._streamTime = Number.NEGATIVE_INFINITY;
+    }
+
+    const buffer = operation._buffer;
+    const bufferConfig = this._normalizeSuppressionBufferConfig(operation.options?.bufferConfig);
+    let streamTime = operation._streamTime;
+    const graceMs = Number.isFinite(operation.options?.graceMs) ? operation.options.graceMs : (operation.options?.graceMs ?? 0);
+
+    const emitted = [];
+    let suppressedCount = 0;
+    let lateCount = 0;
+    let overflowCount = 0;
+
+    for (const record of records) {
+      const eventTimestamp = record.eventTimestamp ?? record.timestamp ?? Date.now();
+      const previousStreamTime = streamTime;
+      streamTime = Math.max(streamTime, eventTimestamp);
+
+      const windowedKey = record.key;
+      const window = windowedKey?.window;
+      if (!window) {
+        emitted.push(record);
+        continue;
+      }
+
+      const closingTime = this._resolveSuppressionClosingTime(window, graceMs);
+      if (previousStreamTime >= closingTime) {
+        lateCount += 1;
+        continue;
+      }
+
+      const bufferKey = this._formatSuppressionKey(windowedKey);
+      buffer.set(bufferKey, { record, closingTime, eventTimestamp });
+      suppressedCount += 1;
+
+      if (buffer.size > bufferConfig.maxRecords) {
+        if (bufferConfig.emitEarlyWhenFull) {
+          const earliestKey = this._findEarliestSuppressed(buffer);
+          if (earliestKey) {
+            const earliest = buffer.get(earliestKey);
+            emitted.push(earliest.record);
+            buffer.delete(earliestKey);
+          }
+        } else {
+          buffer.delete(bufferKey);
+          overflowCount += 1;
+        }
+      }
+    }
+
+    const ready = [];
+    for (const [bufferKey, entry] of buffer.entries()) {
+      if (streamTime >= entry.closingTime) {
+        ready.push({ bufferKey, ...entry });
+      }
+    }
+
+    ready.sort((a, b) => {
+      if (a.closingTime === b.closingTime) {
+        return (a.eventTimestamp ?? 0) - (b.eventTimestamp ?? 0);
+      }
+      return a.closingTime - b.closingTime;
+    });
+
+    for (const entry of ready) {
+      emitted.push(entry.record);
+      buffer.delete(entry.bufferKey);
+    }
+
+    operation._streamTime = streamTime;
+
+    if (suppressedCount) {
+      this._metrics.record('stream.records.suppressed', suppressedCount, { streamId: stream.id, operationId: operation.id });
+    }
+    if (emitted.length) {
+      this._metrics.record('stream.records.suppressed.flushed', emitted.length, { streamId: stream.id, operationId: operation.id });
+    }
+    if (lateCount) {
+      this._metrics.record('stream.records.late', lateCount, { streamId: stream.id, operationId: operation.id });
+    }
+    if (overflowCount) {
+      this._metrics.record('stream.suppression.buffer.overflow', overflowCount, { streamId: stream.id, operationId: operation.id });
+    }
+
+    return emitted;
+  }
+
+  _normalizeSuppressionBufferConfig(config = {}) {
+    if (!config) {
+      return { maxRecords: Infinity, emitEarlyWhenFull: false };
+    }
+
+    const maxRecordsRaw = config.maxRecords ?? Infinity;
+    const maxRecords = maxRecordsRaw === Infinity ? Infinity : Math.max(1, Math.floor(Number(maxRecordsRaw)) || 1);
+
+    return {
+      maxRecords,
+      emitEarlyWhenFull: Boolean(config.emitEarlyWhenFull)
+    };
+  }
+
+  _resolveSuppressionClosingTime(window, graceMs = 0) {
+    if (!window) {
+      return Number.POSITIVE_INFINITY;
+    }
+    const end = Number.isFinite(window.end) ? window.end : (window.end ?? Number.POSITIVE_INFINITY);
+    if (!Number.isFinite(end)) {
+      return Number.POSITIVE_INFINITY;
+    }
+    const grace = Number.isFinite(graceMs) ? graceMs : 0;
+    return end + grace;
+  }
+
+  _formatSuppressionKey(windowedKey = {}) {
+    const keyPart = this._stringifySuppressionKey(windowedKey.key);
+    const window = windowedKey.window ?? {};
+    const start = Number.isFinite(window.start) ? window.start : Number.MIN_SAFE_INTEGER;
+    const end = Number.isFinite(window.end) ? window.end : Number.MAX_SAFE_INTEGER;
+    return `${keyPart}:${start}:${end}`;
+  }
+
+  _stringifySuppressionKey(key) {
+    if (key === null) {
+      return 'null';
+    }
+    if (key === undefined) {
+      return 'undefined';
+    }
+    if (typeof key === 'string' || typeof key === 'number' || typeof key === 'boolean') {
+      return String(key);
+    }
+    if (Buffer.isBuffer(key)) {
+      return key.toString('base64');
+    }
+    try {
+      return JSON.stringify(key);
+    } catch (err) {
+      return String(key);
+    }
+  }
+
+  _findEarliestSuppressed(buffer) {
+    let earliestKey = null;
+    let earliestClosingTime = Number.POSITIVE_INFINITY;
+    for (const [key, entry] of buffer.entries()) {
+      if (entry.closingTime < earliestClosingTime) {
+        earliestClosingTime = entry.closingTime;
+        earliestKey = key;
+      }
+    }
+    return earliestKey;
   }
 
   _resolveRecordWindows(windowType, windowInstance, timestamp) {
@@ -501,7 +669,8 @@ class KafkaStreams extends EventEmitter {
       ...record,
       key: { key, window: { start: sessionStart, end: sessionEnd } },
       value: aggregate,
-      timestamp: sessionEnd
+      timestamp: sessionEnd,
+      eventTimestamp: record.eventTimestamp ?? record.timestamp ?? timestamp
     };
   }
 

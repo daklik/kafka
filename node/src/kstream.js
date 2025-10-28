@@ -14,6 +14,7 @@ const { SlidingWindows } = require('./windows/sliding-windows');
 const { TimeWindows } = require('./windows/time-windows');
 const { SessionWindows } = require('./windows/session-windows');
 const { UnlimitedWindows } = require('./windows/unlimited-windows');
+const { Suppressed } = require('./suppressed');
 
 class KStream {
   constructor({
@@ -141,6 +142,50 @@ class KStream {
       otherValueSerde: joinedOrOptions.otherValueSerde ?? defaults.otherValueSerde,
       named: joinedOrOptions.named ?? defaults.named
     };
+  }
+
+  _resolveSuppressed(suppressedOrOptions = {}) {
+    if (suppressedOrOptions instanceof Suppressed) {
+      return suppressedOrOptions.describe();
+    }
+
+    if (suppressedOrOptions?.suppressed instanceof Suppressed) {
+      return suppressedOrOptions.suppressed.describe();
+    }
+
+    const strategy = suppressedOrOptions.strategy ?? suppressedOrOptions.type ?? 'untilWindowCloses';
+    const bufferConfig = Suppressed.BufferConfig.from(suppressedOrOptions.bufferConfig ?? suppressedOrOptions);
+
+    return {
+      strategy,
+      bufferConfig: bufferConfig.describe()
+    };
+  }
+
+  _resolveWindowGrace(aggregateOperation) {
+    if (!aggregateOperation) {
+      return 0;
+    }
+
+    const metadataGrace = aggregateOperation.options?.window?.graceMs;
+    if (metadataGrace !== undefined && metadataGrace !== null) {
+      return metadataGrace;
+    }
+
+    const instance = aggregateOperation.windowInstance;
+    if (instance) {
+      if (typeof instance.gracePeriod === 'function') {
+        const grace = instance.gracePeriod();
+        if (grace !== undefined && grace !== null) {
+          return grace;
+        }
+      }
+      if (typeof instance.graceMs === 'number') {
+        return instance.graceMs;
+      }
+    }
+
+    return 0;
   }
 
   _coerceStoreBuilder({
@@ -453,6 +498,34 @@ class KStream {
       materializedOrOptions,
       defaultSessionMerger: reducer
     });
+  }
+
+  suppress(suppressedOrOptions = {}) {
+    const config = this._resolveSuppressed(suppressedOrOptions);
+    const aggregateOperation = [...this.operations].reverse().find(operation => operation.type === 'aggregate');
+
+    if (!aggregateOperation) {
+      throw new Error('suppress requires a preceding aggregation');
+    }
+
+    if (!aggregateOperation.options?.windowType) {
+      throw new Error('suppress currently supports windowed aggregations');
+    }
+
+    const operation = this._appendOperation('suppress', null, {
+      strategy: config.strategy,
+      bufferConfig: config.bufferConfig,
+      windowType: aggregateOperation.options.windowType,
+      graceMs: this._resolveWindowGrace(aggregateOperation),
+      aggregateOperationId: aggregateOperation.id,
+      windowMetadata: aggregateOperation.options.window ?? null
+    });
+
+    operation.windowInstance = aggregateOperation.windowInstance;
+    operation._buffer = new Map();
+    operation._streamTime = Number.NEGATIVE_INFINITY;
+
+    return this;
   }
 
   through(topic, options = {}) {

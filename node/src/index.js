@@ -16,6 +16,7 @@ const windows = require('./windows');
 const metrics = require('./metrics');
 const errors = require('./errors');
 const query = require('./query');
+const { Suppressed } = require('./suppressed');
 
 module.exports = {
   StreamsBuilder,
@@ -34,6 +35,8 @@ module.exports = {
   errors,
   query,
   windows,
+  Suppressed,
+  BufferConfig: Suppressed.BufferConfig,
   JoinWindows: windows.JoinWindows,
   SlidingWindows: windows.SlidingWindows,
   TimeWindows: windows.TimeWindows,

@@ -46,6 +46,7 @@ Phase 2 focuses on achieving parity between the Java and Node.js Kafka Streams D
 4. Added regression fixtures and tests covering tumbling, hopping, sliding, session, and unlimited windows aligned with Java reference expectations.
 
 ### Step 5 – Suppression and Final Results (P2)
+**Status:** ✅ Completed with a Node `Suppressed` builder, buffer configuration helpers, runtime buffering, metrics, and regression coverage.
 1. Port the `Suppressed` builder (`Suppressed.java`) with configuration for emit strategies (e.g., `untilWindowCloses`).
 2. Implement suppression in windowed aggregations, ensuring record emission respects buffer limits and grace periods.
 3. Add metrics hooks to observe suppressed record counts and late arrival drops.
