@@ -7,6 +7,9 @@ const state = require('./state');
 const { TaskManager } = require('./runtime/task-manager');
 const { Named } = require('./named');
 const { Materialized } = require('./materialized');
+const { StreamsConfig } = require('./config/streams-config');
+const metrics = require('./metrics');
+const errors = require('./errors');
 
 module.exports = {
   StreamsBuilder,
@@ -15,5 +18,8 @@ module.exports = {
   Named,
   Materialized,
   TaskManager,
+  StreamsConfig,
+  metrics,
+  errors,
   ...state
 };

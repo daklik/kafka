@@ -4,6 +4,10 @@ const { Kafka } = require('@confluentinc/kafka-javascript');
 const EventEmitter = require('events');
 const { StreamsBuilder } = require('./streams-builder');
 const { TaskManager } = require('./runtime/task-manager');
+const { StreamsConfig } = require('./config/streams-config');
+const { HandlerAction } = require('./errors');
+
+const SKIP_RECORD = Symbol.for('kafka-streams-skip-record');
 
 class KafkaStreams extends EventEmitter {
   constructor(builderOrTopology, config = {}) {
@@ -16,7 +20,7 @@ class KafkaStreams extends EventEmitter {
       throw new Error('KafkaStreams expects a StreamsBuilder instance or a topology description');
     }
 
-    this.config = config;
+    this.config = config instanceof StreamsConfig ? config : new StreamsConfig(config);
     this._consumers = [];
     this._producers = [];
     this._running = false;
@@ -25,6 +29,8 @@ class KafkaStreams extends EventEmitter {
     this._streamIndex = new Map(this.topology.streams.map(stream => [stream.id, stream]));
     this._taskManager = new TaskManager({ topology: this.topology });
     this._taskManager.registerTopology(this.topology);
+    this._metrics = this.config.getMetricsRegistry();
+    this._errorHandlers = this.config.getErrorHandlers();
   }
 
   async start() {
@@ -32,8 +38,8 @@ class KafkaStreams extends EventEmitter {
       return;
     }
 
-    const clientConfig = this.config.client ?? {};
-    this._kafka = this.config.kafka ?? new Kafka(clientConfig);
+    const clientConfig = this.config.getClientConfig();
+    this._kafka = this.config.getKafkaClient() ?? new Kafka(clientConfig);
 
     const sourceStreams = this.topology.streams.filter(stream => stream.isSource);
     const startPromises = sourceStreams.map(stream => this._startStream(stream));
@@ -67,16 +73,10 @@ class KafkaStreams extends EventEmitter {
   }
 
   async _startStream(stream) {
-    const consumerFactory = this.config.consumerFactory;
-    const producerFactory = this.config.producerFactory;
     const groupId = this._resolveGroupId(stream);
 
-    const consumer = consumerFactory
-      ? await consumerFactory(stream, groupId)
-      : this._kafka.consumer({ groupId, allowAutoTopicCreation: false });
-    const producer = producerFactory
-      ? await producerFactory(stream)
-      : this._kafka.producer();
+    const consumer = await this.config.createConsumer({ stream, kafka: this._kafka, groupId });
+    const producer = await this.config.createProducer({ stream, kafka: this._kafka });
 
     this._consumers.push(consumer);
     this._producers.push(producer);
@@ -96,6 +96,7 @@ class KafkaStreams extends EventEmitter {
           await this._processMessage(stream, payload, producer, stateStores);
           this._taskManager.recordProcessed(stream.id, payload.partition, payload.message?.offset);
         } catch (err) {
+          this._metrics.record('stream.records.failed', 1, { streamId: stream.id });
           this.emit('error', err);
         }
       }
@@ -103,14 +104,7 @@ class KafkaStreams extends EventEmitter {
   }
 
   _resolveGroupId(stream) {
-    if (typeof this.config.groupId === 'function') {
-      return this.config.groupId(stream);
-    }
-    if (typeof this.config.groupId === 'string') {
-      return this.config.groupId;
-    }
-    const prefix = this.config.groupIdPrefix ?? 'kafka-streams-node';
-    return `${prefix}-${stream.id}`;
+    return this.config.resolveGroupId(stream);
   }
 
   async _processMessage(stream, payload, producer, stores = this._stateStores.get(stream.id) ?? new Map()) {
@@ -120,16 +114,43 @@ class KafkaStreams extends EventEmitter {
     const headers = message.headers ?? {};
     const timestamp = message.timestamp ? Number(message.timestamp) : Date.now();
 
+    this._metrics.record('stream.records.consumed', 1, { streamId: stream.id, topic });
+
+    const key = await this._safeDeserialize({
+      stream,
+      payload,
+      component: 'key',
+      buffer: keyBuffer,
+      serde: stream.keySerde
+    });
+    if (key === SKIP_RECORD) {
+      return [];
+    }
+
+    const value = await this._safeDeserialize({
+      stream,
+      payload,
+      component: 'value',
+      buffer: valueBuffer,
+      serde: stream.valueSerde
+    });
+    if (value === SKIP_RECORD) {
+      return [];
+    }
+
     const record = {
       topic,
       partition,
       headers,
       timestamp,
-      key: stream.keySerde ? stream.keySerde.deserialize(keyBuffer) : this._decodeBuffer(keyBuffer),
-      value: stream.valueSerde ? stream.valueSerde.deserialize(valueBuffer) : this._decodeBuffer(valueBuffer)
+      key,
+      value
     };
 
     const results = await this._runOperations(stream, [record], producer, stores, headers, timestamp);
+    if (results.length) {
+      this._metrics.record('stream.records.processed', results.length, { streamId: stream.id });
+    }
     await this._emitToSinks(stream, results, producer, headers, timestamp);
     return results;
   }
@@ -194,14 +215,14 @@ class KafkaStreams extends EventEmitter {
           records = await this._applyAggregate(operation, records, stores);
           break;
         case 'through':
-          records = await this._applyThrough(operation, records, producer, headers, timestamp);
+          records = await this._applyThrough(stream, operation, records, producer, headers, timestamp);
           break;
         case 'branch':
           await this._applyBranch(stream, operation, records, producer, headers, timestamp);
           records = [];
           break;
         case 'repartition':
-          records = await this._applyRepartition(operation, records, producer, headers, timestamp);
+          records = await this._applyRepartition(stream, operation, records, producer, headers, timestamp);
           break;
         case 'join':
           throw new Error('Join operations are not yet implemented in the Node.js port');
@@ -223,16 +244,30 @@ class KafkaStreams extends EventEmitter {
         const { key, value } = outRecord;
         const keyBufferOut = sink.keySerde ? sink.keySerde.serialize(key) : this._encodeValue(key);
         const valueBufferOut = sink.valueSerde ? sink.valueSerde.serialize(value) : this._encodeValue(value);
-        await producer.produce({
-          topic: sink.topic,
-          message: {
-            key: keyBufferOut,
-            value: valueBufferOut,
-            headers: outRecord.headers ?? headers,
-            timestamp: String(outRecord.timestamp ?? timestamp)
-          },
-          partition: sink.partitioner ? sink.partitioner(outRecord) : undefined
-        });
+        try {
+          await producer.produce({
+            topic: sink.topic,
+            message: {
+              key: keyBufferOut,
+              value: valueBufferOut,
+              headers: outRecord.headers ?? headers,
+              timestamp: String(outRecord.timestamp ?? timestamp)
+            },
+            partition: sink.partitioner ? sink.partitioner(outRecord) : undefined
+          });
+          this._metrics.record('stream.records.produced', 1, { streamId: stream.id, topic: sink.topic });
+        } catch (error) {
+          const shouldContinue = await this._handleProductionError({
+            error,
+            stream,
+            record: outRecord,
+            sink,
+            stage: 'sink-produce'
+          });
+          if (!shouldContinue) {
+            throw error;
+          }
+        }
       }
     }
   }
@@ -317,22 +352,35 @@ class KafkaStreams extends EventEmitter {
     return results;
   }
 
-  async _applyThrough(operation, records, producer, headers, timestamp) {
+  async _applyThrough(stream, operation, records, producer, headers, timestamp) {
     const { topic, keySerde, valueSerde, partitioner } = operation.fn;
 
     for (const outRecord of records) {
       const keyBuffer = keySerde ? keySerde.serialize(outRecord.key) : this._encodeValue(outRecord.key);
       const valueBuffer = valueSerde ? valueSerde.serialize(outRecord.value) : this._encodeValue(outRecord.value);
-      await producer.produce({
-        topic,
-        message: {
-          key: keyBuffer,
-          value: valueBuffer,
-          headers: outRecord.headers ?? headers,
-          timestamp: String(outRecord.timestamp ?? timestamp)
-        },
-        partition: partitioner ? partitioner(outRecord) : undefined
-      });
+      try {
+        await producer.produce({
+          topic,
+          message: {
+            key: keyBuffer,
+            value: valueBuffer,
+            headers: outRecord.headers ?? headers,
+            timestamp: String(outRecord.timestamp ?? timestamp)
+          },
+          partition: partitioner ? partitioner(outRecord) : undefined
+        });
+        this._metrics.record('stream.records.produced', 1, { streamId: stream.id, topic });
+      } catch (error) {
+        const shouldContinue = await this._handleProductionError({
+          error,
+          stream,
+          record: outRecord,
+          stage: 'through-produce'
+        });
+        if (!shouldContinue) {
+          throw error;
+        }
+      }
     }
 
     return records.map(record => ({ ...record, topic }));
@@ -356,24 +404,37 @@ class KafkaStreams extends EventEmitter {
     }
   }
 
-  async _applyRepartition(operation, records, producer, headers, timestamp) {
+  async _applyRepartition(stream, operation, records, producer, headers, timestamp) {
     const { topic, keySerde, valueSerde, partitioner } = operation.fn;
     const repartitioned = [];
 
     for (const outRecord of records) {
       const keyBuffer = keySerde ? keySerde.serialize(outRecord.key) : this._encodeValue(outRecord.key);
       const valueBuffer = valueSerde ? valueSerde.serialize(outRecord.value) : this._encodeValue(outRecord.value);
-      await producer.produce({
-        topic,
-        message: {
-          key: keyBuffer,
-          value: valueBuffer,
-          headers: outRecord.headers ?? headers,
-          timestamp: String(outRecord.timestamp ?? timestamp)
-        },
-        partition: partitioner ? partitioner(outRecord) : undefined
-      });
-      repartitioned.push({ ...outRecord, topic });
+      try {
+        await producer.produce({
+          topic,
+          message: {
+            key: keyBuffer,
+            value: valueBuffer,
+            headers: outRecord.headers ?? headers,
+            timestamp: String(outRecord.timestamp ?? timestamp)
+          },
+          partition: partitioner ? partitioner(outRecord) : undefined
+        });
+        this._metrics.record('stream.records.produced', 1, { streamId: stream.id, topic });
+        repartitioned.push({ ...outRecord, topic });
+      } catch (error) {
+        const shouldContinue = await this._handleProductionError({
+          error,
+          stream,
+          record: outRecord,
+          stage: 'repartition-produce'
+        });
+        if (!shouldContinue) {
+          throw error;
+        }
+      }
     }
 
     const targetStream = operation.targetStreamId ? this._streamIndex.get(operation.targetStreamId) : null;
@@ -404,6 +465,49 @@ class KafkaStreams extends EventEmitter {
     }
     this._stateStores.set(stream.id, storeInstances);
     return storeInstances;
+  }
+
+  async _safeDeserialize({ stream, payload, component, buffer, serde }) {
+    try {
+      if (!serde) {
+        return this._decodeBuffer(buffer);
+      }
+      return serde.deserialize(buffer);
+    } catch (error) {
+      const handler = this._errorHandlers.deserialization;
+      const action = handler ? await handler.handle({
+        error,
+        stage: `deserialization-${component}`,
+        stream,
+        payload
+      }) : HandlerAction.FAIL;
+      this._metrics.record('stream.deserialization.errors', 1, { streamId: stream.id, component });
+      if (action === HandlerAction.CONTINUE) {
+        this._metrics.record('stream.records.skipped', 1, { streamId: stream.id, reason: 'deserialization' });
+        return SKIP_RECORD;
+      }
+      throw error;
+    }
+  }
+
+  async _handleProductionError({ error, stream, record, sink, stage }) {
+    const handler = this._errorHandlers.production;
+    this._metrics.record('stream.production.errors', 1, { streamId: stream.id, topic: sink?.topic });
+    if (!handler) {
+      return false;
+    }
+    const action = await handler.handle({
+      error,
+      stream,
+      record,
+      sink,
+      stage
+    });
+    if (action === HandlerAction.CONTINUE) {
+      this._metrics.record('stream.records.skipped', 1, { streamId: stream.id, reason: 'production' });
+      return true;
+    }
+    return false;
   }
 }
 

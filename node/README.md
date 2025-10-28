@@ -26,6 +26,7 @@ const stream = builder
   });
 
 const kafkaStreams = new KafkaStreams(builder, {
+  applicationId: 'example-stream-app',
   client: {
     brokers: ['localhost:9092']
   }
@@ -92,12 +93,16 @@ A lightweight `TaskManager` tracks stream-to-partition assignments, rebalance ev
 
 ## Configuration
 
-The Kafka client configuration mirrors the options expected by `@confluentinc/kafka-javascript`:
+`KafkaStreams` now consumes a first-class `StreamsConfig` surface that mirrors the Java `StreamsConfig` defaults. An
+`applicationId` is required and drives the derived `clientId`, consumer `group.id`, and changelog topic prefixes.
 
 ```js
-const kafkaStreams = new KafkaStreams(builder, {
+const { KafkaStreams, StreamsConfig } = require('kafka-streams-node');
+
+const config = new StreamsConfig({
+  applicationId: 'inventory-app',
   client: {
-    clientId: 'my-app',
+    clientId: 'inventory-client',
     brokers: ['kafka:9092'],
     ssl: true,
     sasl: {
@@ -106,17 +111,44 @@ const kafkaStreams = new KafkaStreams(builder, {
       password: 'password'
     }
   },
-  groupIdPrefix: 'my-streams'
+  processingGuarantee: 'exactly_once_v2'
 });
+
+const kafkaStreams = new KafkaStreams(builder, config);
 ```
 
-Optional factories can be provided to override consumer and producer creation:
+Optional factories can be provided to override consumer and producer creation. Factories receive an options object with the
+stream metadata, derived group id, and resolved config:
 
 ```js
 const kafkaStreams = new KafkaStreams(builder, {
-  kafka: existingKafkaClient,
-  consumerFactory: async (stream, groupId) => myKafka.createConsumer({ groupId }),
-  producerFactory: async () => myKafka.createProducer()
+  applicationId: 'custom-factories',
+  consumerFactory: async ({ stream, groupId, kafka }) => {
+    return kafka.consumer({ groupId, allowAutoTopicCreation: false });
+  },
+  producerFactory: async ({ kafka }) => kafka.producer()
+});
+```
+
+### Metrics and Exception Handlers
+
+Phase 1 P1 introduces a lightweight metrics registry and Java-parity exception handler interfaces. Custom reporters can be
+registered and will receive samples for consumption, production, and error counters:
+
+```js
+const { metrics, errors } = require('kafka-streams-node');
+
+class ConsoleReporter extends metrics.MetricsReporter {
+  record(sample) {
+    console.log(sample);
+  }
+}
+
+const kafkaStreams = new KafkaStreams(builder, {
+  applicationId: 'instrumented-app',
+  metrics: { reporters: [new ConsoleReporter()] },
+  deserializationExceptionHandler: new errors.LogAndContinueExceptionHandler(),
+  productionExceptionHandler: new errors.LogAndFailExceptionHandler()
 });
 ```
 

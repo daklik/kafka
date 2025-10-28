@@ -40,9 +40,9 @@ This document records the findings of Phase 1 of the roadmap outlined in `node/d
 | P0 | `src/streams-builder.js`, `src/kstream.js` | DSL parity foundations | **Completed** – topology description, materialization helpers, branch/repartition operators, and join scaffolding exported. |
 | P0 | `src/runtime/task-manager.js`, `src/kafka-streams.js` | Task & assignment model | **Completed** – task manager tracks partition assignments and offsets with rebalance hooks. |
 | P0 | `src/state` package | State store interfaces | **Completed** – abstract store contracts, builder registry, and changelog configuration delivered. |
-| P1 | `src/config/streams-config.js` (new) | Configuration system | Parse high-level Streams config, validate EOS settings, derive client IDs and topic names. |
-| P1 | `src/metrics` (new) | Metrics framework | Establish metrics registry abstraction aligned with Java sensors.
-| P1 | `src/errors` (new) | Error handling | Implement handler interfaces mirroring Java exception handlers and integrate with runtime. |
+| P1 | `src/config/streams-config.js` (new) | Configuration system | **Completed** – introduced `StreamsConfig` with derived IDs, EOS validation, and consumer/producer factories. |
+| P1 | `src/metrics` (new) | Metrics framework | **Completed** – delivered `StreamsMetrics` registry, reporters, and runtime instrumentation for consumption/production/error counters. |
+| P1 | `src/errors` (new) | Error handling | **Completed** – added Java-style exception handler interfaces wired into deserialization and production paths. |
 | P2 | `src/query` (new) | Interactive queries | Metadata state tracking, RPC interfaces, query routing stubs. |
 | P2 | `test/` | Compatibility harness | Shared fixtures replicating Java DSL and runtime semantics across languages. |
 
@@ -52,6 +52,6 @@ This document records the findings of Phase 1 of the roadmap outlined in `node/d
 - **P2** items can begin after foundational runtime pieces exist but should be planned early to avoid architectural rework.
 
 ## 6. Next Steps
-1. Spin up design spikes for the task model and state store abstractions (P0) to validate feasibility with Node event loop constraints.
-2. Refine module boundaries to separate DSL objects (`KStream`, `KTable`) from runtime orchestration for clearer mapping to Java packages.
-3. Update the roadmap with Phase 1 completion status and align subsequent phase schedules with the prioritized backlog above.
+1. Extend metrics coverage to state store operations and task lifecycle events, aligning naming with `StreamsMetricsImpl` for future parity.
+2. Prototype persistent store adapters and changelog topic naming conventions leveraging the new configuration scaffolding.
+3. Kick off Phase 2 DSL parity work (joins, windowing) using the hardened configuration, metrics, and handler foundations.

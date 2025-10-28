@@ -28,7 +28,7 @@ test('map/filter/flatMapValues pipeline produces expected output', async () => {
     .to('output-topic', { valueSerde: Serde.json() });
 
   const topology = builder.build();
-  const kafkaStreams = new KafkaStreams(topology, {});
+  const kafkaStreams = new KafkaStreams(topology, { applicationId: 'kstream-test-1' });
   const stream = topology.streams.find(s => s.isSource);
   const producer = new InMemoryProducer();
 
@@ -69,7 +69,7 @@ test('groupBy/count aggregates values into a state store and emits updates', asy
     .to('counts-topic', { valueSerde: Serde.json() });
 
   const topology = builder.build();
-  const kafkaStreams = new KafkaStreams(topology, {});
+  const kafkaStreams = new KafkaStreams(topology, { applicationId: 'kstream-test-2' });
   const stream = topology.streams.find(s => s.isSource);
   const producer = new InMemoryProducer();
 
@@ -127,7 +127,7 @@ test('through operation writes intermediate topic and continues downstream', asy
     .to('output-topic', { valueSerde: Serde.string() });
 
   const topology = builder.build();
-  const kafkaStreams = new KafkaStreams(topology, {});
+  const kafkaStreams = new KafkaStreams(topology, { applicationId: 'kstream-test-3' });
   const stream = topology.streams.find(s => s.isSource);
   const producer = new InMemoryProducer();
 
@@ -170,7 +170,7 @@ test('branch operation routes records to matching downstream branches', async ()
   beta.to('beta-topic', { valueSerde: Serde.json() });
 
   const topology = builder.build();
-  const kafkaStreams = new KafkaStreams(topology, {});
+  const kafkaStreams = new KafkaStreams(topology, { applicationId: 'kstream-test-4' });
   const stream = topology.streams.find(s => s.isSource);
   const producer = new InMemoryProducer();
 
@@ -221,7 +221,7 @@ test('repartition creates intermediate topic and continues downstream processing
     .to('output-topic', { valueSerde: Serde.json() });
 
   const topology = builder.build();
-  const kafkaStreams = new KafkaStreams(topology, {});
+  const kafkaStreams = new KafkaStreams(topology, { applicationId: 'kstream-test-5' });
   const stream = topology.streams.find(s => s.isSource);
   const producer = new InMemoryProducer();
 
