@@ -37,9 +37,9 @@ This document records the findings of Phase 1 of the roadmap outlined in `node/d
 ## 5. Prioritized Backlog (Node Modules)
 | Priority | Node Module(s) | Workstream | Key Deliverables |
 | --- | --- | --- | --- |
-| P0 | `src/streams-builder.js`, `src/kstream.js` (to be extracted), `src/kafka-streams.js` | DSL parity foundations | Add topology description, materialization API (`materialized`, `Named`), branch/repartition, join scaffolding hooks. |
-| P0 | `src/runtime/task-manager.js` (new), `src/kafka-streams.js` | Task & assignment model | Introduce task abstraction, partition tracking, rebalance event handling scaffolding. |
-| P0 | `src/state` package | State store interfaces | Define abstract store contracts (`KeyValueStore`, `WindowStore`), builder registry, and changelog configuration objects. |
+| P0 | `src/streams-builder.js`, `src/kstream.js` | DSL parity foundations | **Completed** – topology description, materialization helpers, branch/repartition operators, and join scaffolding exported. |
+| P0 | `src/runtime/task-manager.js`, `src/kafka-streams.js` | Task & assignment model | **Completed** – task manager tracks partition assignments and offsets with rebalance hooks. |
+| P0 | `src/state` package | State store interfaces | **Completed** – abstract store contracts, builder registry, and changelog configuration delivered. |
 | P1 | `src/config/streams-config.js` (new) | Configuration system | Parse high-level Streams config, validate EOS settings, derive client IDs and topic names. |
 | P1 | `src/metrics` (new) | Metrics framework | Establish metrics registry abstraction aligned with Java sensors.
 | P1 | `src/errors` (new) | Error handling | Implement handler interfaces mirroring Java exception handlers and integrate with runtime. |

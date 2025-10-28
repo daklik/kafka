@@ -1,7 +1,10 @@
 'use strict';
 
-class MemoryStateStore {
-  constructor() {
+const { KeyValueStore } = require('./store');
+
+class MemoryStateStore extends KeyValueStore {
+  constructor(name = 'in-memory-store', options = {}) {
+    super(name, { persistent: false, loggingEnabled: options.loggingEnabled ?? false });
     this._store = new Map();
   }
 

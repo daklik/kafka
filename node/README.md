@@ -55,8 +55,11 @@ Transformation and branching primitives mirror the Java DSL:
 - `peek(sideEffect)` / `foreach(sideEffect)`
 - `groupBy(selector)` / `groupByKey()`
 - `aggregate(initializer, aggregator, options)` / `count(options)` / `reduce(reducer, options)`
+- `branch(...predicates)`
+- `repartition(options)`
 - `through(topic, options)`
 - `to(topic, options)`
+- `join/leftJoin/outerJoin` (API scaffolded – execution semantics coming in a later phase)
 
 ### KafkaStreams
 
@@ -74,6 +77,18 @@ Transformation and branching primitives mirror the Java DSL:
 ### State Stores
 
 Aggregations materialize into local state stores. By default an in-memory key value store (`MemoryStateStore`) is used, but custom stores can be provided per aggregation via the `store` option.
+
+Phase 1 introduces parity helpers inspired by the Java API:
+
+- `Materialized` for fluent materialization options (`Materialized.as('name').withKeySerde(...).withStoreBuilder(...)`).
+- `Named` for node naming parity.
+- `Stores` registry and `StoreBuilder` abstractions for building reusable state store suppliers.
+
+State store metadata includes changelog configuration hooks and caching/logging toggles, laying the groundwork for persistent stores in later phases.
+
+### Runtime & Tasks
+
+A lightweight `TaskManager` tracks stream-to-partition assignments, rebalance events, and offset progression. The runtime surfaces this information for future cooperative rebalancing and fault tolerance work.
 
 ## Configuration
 
