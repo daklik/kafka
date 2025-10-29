@@ -24,9 +24,10 @@ function ensureSet(candidate) {
 }
 
 class StateStoreManager extends EventEmitter {
-  constructor({ metrics } = {}) {
+  constructor({ metrics, config } = {}) {
     super();
     this._metrics = metrics ?? null;
+    this._config = config ?? null;
     this._definitions = new Map();
     this._instances = new Map();
   }
@@ -179,7 +180,20 @@ class StateStoreManager extends EventEmitter {
       throw new Error(`State store ${definition.name} is missing a builder.`);
     }
 
-    const store = await definition.builder.build({ stream, storeName: definition.name });
+    const context = {
+      stream,
+      storeName: definition.name,
+      config: this._config,
+      stateDir: this._config?.getStateDirectory?.() ?? null,
+      storeDirectory: this._config?.resolveStateStoreDirectory?.({
+        stream,
+        storeName: definition.name
+      }) ?? null,
+      cacheMaxBytes: this._config?.getCacheMaxBytesBuffering?.() ?? null,
+      builderMetadata: definition.builderMetadata,
+      definition
+    };
+    const store = await definition.builder.build(context);
     this._storeInstance({
       stream,
       definition,

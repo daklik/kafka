@@ -42,7 +42,7 @@ class KafkaStreams extends EventEmitter {
     });
     this._streamThreads = new Map();
     this._metrics = this.config.getMetricsRegistry();
-    this._stateStoreManager = new StateStoreManager({ metrics: this._metrics });
+    this._stateStoreManager = new StateStoreManager({ metrics: this._metrics, config: this.config });
     this._stateStoreManager.on('restore:start', event => this.emit('state.restore.start', event));
     this._stateStoreManager.on('restore:batch', event => this.emit('state.restore.batch', event));
     this._stateStoreManager.on('restore:end', event => this.emit('state.restore.end', event));
