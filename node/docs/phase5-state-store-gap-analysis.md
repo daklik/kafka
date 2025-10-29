@@ -36,10 +36,10 @@ Phase 5 focuses on delivering production-ready state stores and interactive quer
 3. Persisted per-store checkpoints after writes and restores to track last processed offsets and power warm restarts without duplicate replay.
 
 ### Step 3 – Window & Session Store Implementations (P1)
-**Status:** ⏳ Planned.
-1. Implement `persistent-window-store.js` leveraging segmented RocksDB column families mirroring `RocksDBWindowStore`, supporting retention windows, grace periods, and range queries.
-2. Provide `persistent-session-store.js` with merged session handling mirroring `RocksDBSessionStore`, including session key serialization and tombstone compaction.
-3. Expose window/session builder helpers (`Stores.persistentWindowStore`, `Stores.persistentSessionStore`) and update DSL materialization paths to consume them.
+**Status:** ✅ Completed.
+1. Added `persistent-window-store.js` to back windowed stores with RocksDB, including composite key serialization, retention-aware purging, range fetches, and iterator helpers that surface timestamp boundaries alongside stored values.
+2. Introduced `persistent-session-store.js` with overlapping-session merges, tombstone-aware deletes, retention enforcement, and key-range lookups compatible with `RocksDBSessionStore` semantics.
+3. Extended `Stores` with `persistentWindowStore`/`persistentSessionStore` builders that describe window metadata, and added unit tests covering persistence, purge behaviour, and key range queries.
 
 ### Step 4 – Interactive Query Metadata & RPC (P1)
 **Status:** ⏳ Planned.
