@@ -5,6 +5,8 @@ const EventEmitter = require('events');
 const { StreamsBuilder } = require('./streams-builder');
 const { TaskManager } = require('./runtime/task-manager');
 const { StateStoreManager } = require('./runtime/state-store-manager');
+const { StreamThread } = require('./runtime/stream-thread');
+const { TransactionManager } = require('./runtime/transaction-manager');
 const { StreamsConfig } = require('./config/streams-config');
 const { HandlerAction } = require('./errors');
 const { QueryMetadataManager, InteractiveQueryService } = require('./query');
@@ -32,11 +34,20 @@ class KafkaStreams extends EventEmitter {
     this._streamIndex = new Map(this.topology.streams.map(stream => [stream.id, stream]));
     this._taskManager = new TaskManager({ topology: this.topology });
     this._taskManager.registerTopology(this.topology);
+    this._transactionManager = new TransactionManager({
+      guarantee: this.config.processingGuarantee,
+      logger: {
+        error: (message, context) => this.emit('transaction.error', { message, context })
+      }
+    });
+    this._streamThreads = new Map();
     this._metrics = this.config.getMetricsRegistry();
     this._stateStoreManager = new StateStoreManager({ metrics: this._metrics });
     this._stateStoreManager.on('restore:start', event => this.emit('state.restore.start', event));
     this._stateStoreManager.on('restore:batch', event => this.emit('state.restore.batch', event));
     this._stateStoreManager.on('restore:end', event => this.emit('state.restore.end', event));
+    this._taskManager.on('task.transition', event => this.emit('task.transition', event));
+    this._taskManager.on('task.lag', event => this.emit('task.lag', event));
     this._errorHandlers = this.config.getErrorHandlers();
     const interactiveConfig = this.config.getInteractiveQueryConfig?.() ?? {};
     this._queryMetadata = new QueryMetadataManager({
@@ -100,6 +111,10 @@ class KafkaStreams extends EventEmitter {
     this._kafka = null;
     this._stateStores.clear();
     this._processorInstances.clear();
+    for (const thread of this._streamThreads.values()) {
+      thread.removeAllListeners();
+    }
+    this._streamThreads.clear();
     this._running = false;
     this.emit('stopped');
   }
@@ -122,19 +137,37 @@ class KafkaStreams extends EventEmitter {
 
     this._taskManager.registerConsumer(stream.id, consumer);
 
+    const streamThread = new StreamThread({
+      stream,
+      taskManager: this._taskManager,
+      stateStoreManager: this._stateStoreManager,
+      metrics: this._metrics,
+      config: this.config,
+      transactionManager: this._transactionManager
+    });
+    streamThread.bindConsumer(consumer);
+    streamThread.bindProducer(producer);
+    streamThread.on('error', error => this.emit('error', error));
+    streamThread.on('commit', event => this.emit('commit', event));
+    this._streamThreads.set(stream.id, streamThread);
+
+    const handleMessage = streamThread.wrapHandler(async payload => {
+      await this._processMessage(stream, payload, producer, stateStores);
+      const messageTimestamp = payload.message?.timestamp != null
+        ? Number(payload.message.timestamp)
+        : Date.now();
+      await this._taskManager.recordProcessed(
+        stream.id,
+        payload.partition,
+        payload.message?.offset,
+        messageTimestamp
+      );
+    });
+
     await consumer.run({
       eachMessage: async payload => {
         try {
-          await this._processMessage(stream, payload, producer, stateStores);
-          const messageTimestamp = payload.message?.timestamp != null
-            ? Number(payload.message.timestamp)
-            : Date.now();
-          await this._taskManager.recordProcessed(
-            stream.id,
-            payload.partition,
-            payload.message?.offset,
-            messageTimestamp
-          );
+          await handleMessage(payload);
         } catch (err) {
           this._metrics.record('stream.records.failed', 1, { streamId: stream.id });
           this.emit('error', err);

@@ -74,6 +74,13 @@ class StateStoreManager extends EventEmitter {
     return normalized;
   }
 
+  getDefinition(streamId, storeName) {
+    if (!streamId || !storeName) {
+      return null;
+    }
+    return this._definitions.get(streamId)?.get(storeName) ?? null;
+  }
+
   attachRestoreListener({ stream, streamId, storeName, listener }) {
     if (!listener) {
       return () => {};
@@ -183,6 +190,40 @@ class StateStoreManager extends EventEmitter {
       emitLifecycle: true
     });
     return store;
+  }
+
+  async restoreStore({ stream, storeName, restoreBatches = [], restoreOffsets = {} }) {
+    if (!stream?.id) {
+      throw new TypeError('restoreStore requires a stream with an id.');
+    }
+    if (!storeName) {
+      throw new TypeError('restoreStore requires a storeName.');
+    }
+
+    const definition = this.getDefinition(stream.id, storeName);
+    if (!definition) {
+      throw new Error(`State store ${storeName} is not registered for stream ${stream.id}.`);
+    }
+
+    const existing = this.getStore(stream.id, storeName);
+    if (!existing) {
+      await this.buildAndRegister({
+        stream,
+        definition,
+        restoreBatches,
+        restoreOffsets
+      });
+      return this.getStore(stream.id, storeName);
+    }
+
+    this._emitRestoreLifecycle({
+      stream,
+      definition,
+      restoreBatches,
+      restoreOffsets
+    });
+
+    return existing;
   }
 
   registerPrebuilt({ stream, storeName, store }) {

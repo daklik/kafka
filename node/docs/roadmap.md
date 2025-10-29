@@ -41,6 +41,7 @@ _Deliverable_: Processor API surface and topology builder capable of loading Jav
 4. **Restore Logic**: Implement state restoration from changelog topics with progress listeners.
 
 _Deliverable_: Production-grade runtime managing tasks, rebalances, and EOS modes.
+**Status:** Steps 1–6 complete with lifecycle instrumentation, cooperative assignment helpers, transaction management, and restore flows documented in the [Phase 4 Gap Analysis](phase4-runtime-gap-analysis.md).
 
 ## Phase 5 – State Stores & Interactive Queries
 1. **Persistent Stores**: Port RocksDB-like storage via Node bindings or pluggable adapters; support changelogging and caching layers.

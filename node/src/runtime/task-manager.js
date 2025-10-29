@@ -9,6 +9,26 @@ const DEFAULT_CLOCK = {
   clearTimeout: timer => clearTimeout(timer)
 };
 
+const TaskState = Object.freeze({
+  CREATED: 'CREATED',
+  ASSIGNED: 'ASSIGNED',
+  RESTORING: 'RESTORING',
+  RUNNING: 'RUNNING',
+  SUSPENDED: 'SUSPENDED',
+  REVOKED: 'REVOKED',
+  FAILED: 'FAILED'
+});
+
+const VALID_TRANSITIONS = Object.freeze({
+  [TaskState.CREATED]: new Set([TaskState.ASSIGNED, TaskState.RESTORING, TaskState.RUNNING, TaskState.REVOKED]),
+  [TaskState.ASSIGNED]: new Set([TaskState.RESTORING, TaskState.RUNNING, TaskState.SUSPENDED, TaskState.REVOKED]),
+  [TaskState.RESTORING]: new Set([TaskState.RUNNING, TaskState.SUSPENDED, TaskState.REVOKED, TaskState.FAILED]),
+  [TaskState.RUNNING]: new Set([TaskState.RUNNING, TaskState.SUSPENDED, TaskState.REVOKED, TaskState.FAILED]),
+  [TaskState.SUSPENDED]: new Set([TaskState.RESTORING, TaskState.RUNNING, TaskState.REVOKED, TaskState.FAILED]),
+  [TaskState.REVOKED]: new Set([TaskState.ASSIGNED, TaskState.RESTORING, TaskState.RUNNING]),
+  [TaskState.FAILED]: new Set([TaskState.RESTORING, TaskState.REVOKED])
+});
+
 function normalizeClock(clock = {}) {
   if (!clock) {
     return DEFAULT_CLOCK;
@@ -64,17 +84,15 @@ class TaskManager extends EventEmitter {
     if (event?.assignedPartitions) {
       for (const partition of event.assignedPartitions) {
         const task = this._ensureTask(streamId, partition);
-        task.state = 'assigned';
         task.assignmentEpoch = (task.assignmentEpoch ?? 0) + 1;
-        task.lastUpdate = this._clock.now();
+        this._transitionTask(task, TaskState.ASSIGNED, { reason: 'rebalance-assignment', eventName });
       }
     }
     if (event?.revokedPartitions) {
       for (const partition of event.revokedPartitions) {
         const task = tasks.get(partition);
         if (task) {
-          task.state = 'revoked';
-          task.lastUpdate = this._clock.now();
+          this._transitionTask(task, TaskState.REVOKED, { reason: 'rebalance-revocation', eventName });
           this._cancelTaskPunctuators(streamId, partition);
         }
       }
@@ -86,7 +104,7 @@ class TaskManager extends EventEmitter {
     const task = this._ensureTask(streamId, partition);
     task.lastOffset = offset != null ? Number(offset) : null;
     task.lastUpdate = this._clock.now();
-    task.state = task.state ?? 'running';
+    this._transitionTask(task, TaskState.RUNNING, { reason: 'record-processed' });
 
     const numericTimestamp = toTimestamp(timestamp);
     if (numericTimestamp != null) {
@@ -286,6 +304,55 @@ class TaskManager extends EventEmitter {
     }
   }
 
+  assign(streamId, assignments = []) {
+    if (!streamId) {
+      throw new TypeError('assign requires a streamId.');
+    }
+    const assigned = new Set();
+    for (const assignment of assignments) {
+      const partition = assignment?.partition;
+      if (partition == null) {
+        continue;
+      }
+      const task = this._ensureTask(streamId, partition);
+      task.type = assignment.type ?? task.type ?? 'active';
+      task.standby = task.type === 'standby';
+      task.assignmentEpoch = (assignment.epoch ?? task.assignmentEpoch ?? 0) + 1;
+      task.changelogOffsets = assignment.changelogOffsets ?? task.changelogOffsets ?? null;
+      const state = assignment.state ?? (assignment.restoring ? TaskState.RESTORING : TaskState.ASSIGNED);
+      this._transitionTask(task, state, { reason: 'assignment', metadata: assignment.metadata });
+      assigned.add(partition);
+    }
+
+    const tasks = this._tasks.get(streamId);
+    if (tasks) {
+      for (const [partition, task] of tasks.entries()) {
+        if (!assigned.has(partition) && task.state !== TaskState.REVOKED) {
+          this._transitionTask(task, TaskState.REVOKED, { reason: 'assignment-revocation' });
+          this._cancelTaskPunctuators(streamId, partition);
+        }
+      }
+    }
+    return this.snapshot(streamId);
+  }
+
+  updateState(streamId, partition, newState, metadata = {}) {
+    const task = this._ensureTask(streamId, partition);
+    this._transitionTask(task, newState, metadata);
+    return { ...task };
+  }
+
+  markStandbyLag(streamId, partition, lagMetrics = {}) {
+    const task = this._ensureTask(streamId, partition);
+    task.standbyLag = {
+      total: lagMetrics.total != null ? Number(lagMetrics.total) : task.standbyLag?.total ?? null,
+      perStore: { ...(task.standbyLag?.perStore ?? {}), ...(lagMetrics.perStore ?? {}) }
+    };
+    task.lastUpdate = this._clock.now();
+    this.emit('task.lag', { streamId, partition, lag: task.standbyLag });
+    return { ...task.standbyLag };
+  }
+
   _ensureTask(streamId, partition) {
     let tasks = this._tasks.get(streamId);
     if (!tasks) {
@@ -297,15 +364,52 @@ class TaskManager extends EventEmitter {
       task = {
         streamId,
         partition,
-        state: 'created',
+        state: TaskState.CREATED,
         assignmentEpoch: 0,
         lastOffset: null,
         lastUpdate: this._clock.now(),
-        streamTime: null
+        streamTime: null,
+        type: 'active',
+        standby: false,
+        metadata: {}
       };
       tasks.set(partition, task);
     }
     return task;
+  }
+
+  _transitionTask(task, newState, metadata = {}) {
+    if (!task) {
+      return;
+    }
+    const currentState = task.state ?? TaskState.CREATED;
+    const requestedState = newState ?? currentState;
+    const allowed = VALID_TRANSITIONS[currentState];
+    if (requestedState !== currentState && !(allowed && allowed.has(requestedState))) {
+      const error = new Error(`Invalid task state transition from ${currentState} to ${requestedState}`);
+      error.code = 'ERR_INVALID_TASK_STATE';
+      throw error;
+    }
+    task.state = requestedState;
+    task.lastUpdate = this._clock.now();
+    if (metadata) {
+      const nextMetadata = { ...(task.metadata ?? {}) };
+      if (metadata.metadata && typeof metadata.metadata === 'object') {
+        Object.assign(nextMetadata, metadata.metadata);
+      }
+      if (metadata.reason) {
+        nextMetadata.lastTransitionReason = metadata.reason;
+      }
+      task.metadata = nextMetadata;
+    }
+    this.emit('task.transition', {
+      streamId: task.streamId,
+      partition: task.partition,
+      state: task.state,
+      previousState: currentState,
+      metadata,
+      task: { ...task }
+    });
   }
 
   snapshot(streamId) {
@@ -321,5 +425,6 @@ class TaskManager extends EventEmitter {
 }
 
 module.exports = {
-  TaskManager
+  TaskManager,
+  TaskState
 };
