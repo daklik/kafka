@@ -1,5 +1,10 @@
 'use strict';
 
+const PunctuationType = Object.freeze({
+  STREAM_TIME: 'STREAM_TIME',
+  WALL_CLOCK_TIME: 'WALL_CLOCK_TIME'
+});
+
 class ForwardingDisabledException extends Error {
   constructor(message = 'Forwarding is disabled for the current processor node.') {
     super(message);
@@ -228,13 +233,17 @@ class ProcessorContext {
     if (typeof this._scheduler !== 'function') {
       throw new Error('ProcessorContext was constructed without a scheduler.');
     }
-    if (typeof intervalMs !== 'number' || intervalMs < 0) {
-      throw new TypeError('ProcessorContext#schedule requires a non-negative interval in milliseconds.');
+    if (typeof intervalMs !== 'number' || Number.isNaN(intervalMs) || intervalMs <= 0) {
+      throw new TypeError('ProcessorContext#schedule requires a positive interval in milliseconds.');
     }
     if (typeof punctuator !== 'function') {
       throw new TypeError('ProcessorContext#schedule requires a punctuator callback.');
     }
-    return this._scheduler(intervalMs, punctuator, options);
+    const type = options.type ?? PunctuationType.WALL_CLOCK_TIME;
+    if (!Object.values(PunctuationType).includes(type)) {
+      throw new TypeError('ProcessorContext#schedule received an unknown punctuation type.');
+    }
+    return this._scheduler(intervalMs, punctuator, { ...options, type });
   }
 }
 
@@ -242,5 +251,6 @@ module.exports = {
   ForwardingDisabledException,
   ProcessorContext,
   RecordContext,
-  To
+  To,
+  PunctuationType
 };

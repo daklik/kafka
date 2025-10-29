@@ -52,5 +52,6 @@ module.exports = {
   RecordContext: processor.RecordContext,
   ForwardingDisabledException: processor.ForwardingDisabledException,
   To: processor.To,
+  PunctuationType: processor.PunctuationType,
   ...state
 };

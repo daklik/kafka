@@ -33,11 +33,11 @@ Phase 3 builds on the DSL parity delivered in Phase 2 and focuses on porting the
 4. Connected context propagation to the existing DSL runtime so future Processor API nodes can share forwarding and metadata infrastructure.
 
 ### Step 3 – Scheduling & Punctuation (P1)
-**Status:** ⏳ Pending.
-1. Extend the runtime task loop in `node/src/runtime/task-manager.js` with a scheduler capable of registering wall-clock and stream-time punctuators.
-2. Port Java scheduling semantics (`PunctuationType.STREAM_TIME`, `PunctuationType.WALL_CLOCK_TIME`) including coalescing duplicate schedules and honoring `cancel()` semantics.
-3. Expose scheduling via `ProcessorContext#schedule`, returning handles with `cancel()`; ensure compatibility with async task execution and Node timers.
-4. Add tests covering punctual firing order, stream-time advancement, and cancellation across multiple processors.
+**Status:** ✅ Complete.
+1. Extended `node/src/runtime/task-manager.js` with a unified scheduler that registers wall-clock and stream-time punctuators per task, deduplicating repeated schedules and cancelling them during rebalances.
+2. Ported Java `PunctuationType` semantics, exposing a shared enum through the processor module and validating intervals and types inside `ProcessorContext#schedule`.
+3. Threaded timestamp-aware bookkeeping through `TaskManager#recordProcessed`, allowing stream-time punctuators to fire deterministically as KafkaStreams advances record metadata.
+4. Added unit tests with a fake clock to cover firing order, stream-time advancement, deduplication, and cancellation across wall-clock and stream-time scenarios.
 
 ### Step 4 – State Store Registration & Restoration (P1)
 **Status:** ⏳ Pending.

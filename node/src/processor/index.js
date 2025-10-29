@@ -153,7 +153,8 @@ const {
   ForwardingDisabledException,
   ProcessorContext,
   RecordContext,
-  To
+  To,
+  PunctuationType
 } = require('./context');
 
 module.exports = {
@@ -167,5 +168,6 @@ module.exports = {
   ProcessorContext,
   RecordContext,
   ForwardingDisabledException,
-  To
+  To,
+  PunctuationType
 };

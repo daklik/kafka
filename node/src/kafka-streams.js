@@ -109,7 +109,15 @@ class KafkaStreams extends EventEmitter {
       eachMessage: async payload => {
         try {
           await this._processMessage(stream, payload, producer, stateStores);
-          this._taskManager.recordProcessed(stream.id, payload.partition, payload.message?.offset);
+          const messageTimestamp = payload.message?.timestamp != null
+            ? Number(payload.message.timestamp)
+            : Date.now();
+          await this._taskManager.recordProcessed(
+            stream.id,
+            payload.partition,
+            payload.message?.offset,
+            messageTimestamp
+          );
         } catch (err) {
           this._metrics.record('stream.records.failed', 1, { streamId: stream.id });
           this.emit('error', err);

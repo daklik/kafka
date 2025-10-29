@@ -32,7 +32,7 @@ _Deliverable_: Expanded `StreamsBuilder`/DSL API with parity tests referencing J
 4. **Topology Optimizations**: Port graph optimizations (e.g., KTable/Source node reuse) and named processors.
 
 _Deliverable_: Processor API surface and topology builder capable of loading Java parity blueprints.
-**Status:** Step 1–2 complete (processor types and contexts); scheduling, state store wiring, and topology builder work remain – see [Phase 3 Gap Analysis](phase3-gap-analysis.md) for detailed steps and dependencies.
+**Status:** Step 1–3 complete (processor types, contexts, and scheduling); state store wiring and topology builder work remain – see [Phase 3 Gap Analysis](phase3-gap-analysis.md) for detailed steps and dependencies.
 
 ## Phase 4 – Runtime, Tasks, and Exactly-Once Semantics
 1. **Threading & Task Model**: Model stream threads, standby tasks, task transitions (`CREATED`, `RESTORING`, `RUNNING`) following `KafkaStreams` and `StreamThread` logic.
