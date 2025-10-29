@@ -17,6 +17,7 @@ const metrics = require('./metrics');
 const errors = require('./errors');
 const query = require('./query');
 const { Suppressed } = require('./suppressed');
+const processor = require('./processor');
 
 module.exports = {
   StreamsBuilder,
@@ -42,5 +43,10 @@ module.exports = {
   TimeWindows: windows.TimeWindows,
   SessionWindows: windows.SessionWindows,
   UnlimitedWindows: windows.UnlimitedWindows,
+  processor,
+  Processor: processor.Processor,
+  ProcessorSupplier: processor.ProcessorSupplier,
+  Transformer: processor.Transformer,
+  ValueTransformer: processor.ValueTransformer,
   ...state
 };

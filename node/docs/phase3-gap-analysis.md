@@ -20,7 +20,7 @@ Phase 3 builds on the DSL parity delivered in Phase 2 and focuses on porting the
 ## 3. Step-by-Step Plan
 
 ### Step 1 – Define Processor API Types (P0)
-**Status:** ⏳ Pending.
+**Status:** ✅ Complete.
 1. Port `Processor`, `ProcessorSupplier`, `Transformer`, and `ValueTransformer` interfaces into a new `node/src/processor` package.
 2. Implement lifecycle hooks (`init`, `process`, `close`) returning Promises to accommodate async work while preserving sync compatibility.
 3. Add compatibility shims for legacy `ProcessorSupplier` signatures (`() => Processor`) and Node-friendly class-based processors.
