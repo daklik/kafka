@@ -159,7 +159,9 @@ class ProcessorContext {
     scheduler = null,
     currentNode = null,
     recordContext = null,
-    forwardingEnabled = true
+    forwardingEnabled = true,
+    stateStoreRegistrar = null,
+    stateStoreProvider = null
   } = {}) {
     this.applicationId = applicationId;
     this.taskId = taskId;
@@ -169,6 +171,8 @@ class ProcessorContext {
     this._currentNode = currentNode;
     this._recordContext = recordContext;
     this._forwardingEnabled = forwardingEnabled;
+    this._stateStoreRegistrar = stateStoreRegistrar;
+    this._stateStoreProvider = stateStoreProvider;
   }
 
   setCurrentNode(node) {
@@ -244,6 +248,51 @@ class ProcessorContext {
       throw new TypeError('ProcessorContext#schedule received an unknown punctuation type.');
     }
     return this._scheduler(intervalMs, punctuator, { ...options, type });
+  }
+
+  async register(storeOrName, options = {}) {
+    if (typeof this._stateStoreRegistrar !== 'function') {
+      throw new Error('ProcessorContext was constructed without state store registration support.');
+    }
+
+    let storeName;
+    let builder = null;
+    if (storeOrName && typeof storeOrName === 'object' && typeof storeOrName.build === 'function') {
+      builder = storeOrName;
+      storeName = builder.name;
+    } else {
+      storeName = storeOrName;
+      if (options.storeBuilder && typeof options.storeBuilder.build === 'function') {
+        builder = options.storeBuilder;
+      }
+    }
+
+    if (!storeName) {
+      throw new TypeError('ProcessorContext#register requires a store name or StoreBuilder instance.');
+    }
+
+    const payload = {
+      storeName,
+      storeBuilder: builder,
+      keySerde: options.keySerde ?? null,
+      valueSerde: options.valueSerde ?? null,
+      metadata: options.metadata ?? {},
+      stateRestoreListener: options.stateRestoreListener ?? options.restoreListener ?? null,
+      restoreBatches: Array.isArray(options.restoreBatches) ? options.restoreBatches.slice() : [],
+      restoreOffsets: options.restoreOffsets ?? {}
+    };
+
+    return Promise.resolve(this._stateStoreRegistrar(payload));
+  }
+
+  getStateStore(name) {
+    if (!name) {
+      throw new TypeError('ProcessorContext#getStateStore requires a state store name.');
+    }
+    if (typeof this._stateStoreProvider !== 'function') {
+      throw new Error('ProcessorContext was constructed without state store access.');
+    }
+    return this._stateStoreProvider(name) ?? null;
   }
 }
 

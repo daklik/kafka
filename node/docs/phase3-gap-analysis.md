@@ -40,11 +40,11 @@ Phase 3 builds on the DSL parity delivered in Phase 2 and focuses on porting the
 4. Added unit tests with a fake clock to cover firing order, stream-time advancement, deduplication, and cancellation across wall-clock and stream-time scenarios.
 
 ### Step 4 – State Store Registration & Restoration (P1)
-**Status:** ⏳ Pending.
-1. Implement `ProcessorContext#getStateStore` and `register` semantics to attach custom stores defined via `Stores.storeBuilder`.
-2. Integrate with existing changelog metadata so registered stores automatically enlist for restoration and logging.
-3. Provide `StateRestoreListener` equivalents in the runtime to emit `onRestoreStart`, `onBatchRestored`, and `onRestoreEnd` events, reusing metrics hooks from Phase 1.
-4. Expand compatibility harness fixtures to cover processor-managed stores and changelog replay scenarios.
+**Status:** ✅ Complete.
+1. Added `ProcessorContext#register`/`getStateStore` helpers that wire StoreBuilder instances into task state, normalise listeners, and surface runtime store handles.
+2. Introduced a shared `StateStoreManager` that records changelog metadata, instantiates stores through the existing builders, and exposes instances for interactive queries.
+3. Emitted state-restore lifecycle events (`state.restore.start/batch/end`) with metrics hooks and listener callbacks mirroring Java’s `StateRestoreListener` contract.
+4. Exercised processor-managed store registration with unit tests covering changelog offsets, lifecycle events, and metrics emission.
 
 ### Step 5 – Topology Builder Enhancements (P1)
 **Status:** ⏳ Pending.

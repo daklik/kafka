@@ -162,6 +162,7 @@ class KTable {
       builder: storeBuilder,
       builderMetadata: storeBuilder.describe(),
       metadata,
+      restoreListeners: new Set(),
       describe: () => ({
         name,
         type: storeBuilder.type,
@@ -185,7 +186,15 @@ class KTable {
       valueSerde: this.valueSerde,
       operations: this.operations.slice(),
       sinks: this.sinks.slice(),
-      stateStores: Array.from(this.stateStores.values()),
+      stateStores: Array.from(this.stateStores.values()).map(store => ({
+        name: store.name,
+        keySerde: store.keySerde,
+        valueSerde: store.valueSerde,
+        builder: store.builder,
+        builderMetadata: store.builderMetadata ?? store.builder?.describe?.(),
+        metadata: store.metadata ?? {},
+        restoreListeners: Array.from(store.restoreListeners ?? [])
+      })),
       isSource: true,
       isTable: true,
       isGlobalKTable: this.isGlobalKTable,

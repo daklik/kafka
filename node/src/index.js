@@ -5,6 +5,7 @@ const { KafkaStreams } = require('./kafka-streams');
 const { Serde } = require('./serde');
 const state = require('./state');
 const { TaskManager } = require('./runtime/task-manager');
+const { StateStoreManager } = require('./runtime/state-store-manager');
 const { Named } = require('./named');
 const { Materialized } = require('./materialized');
 const { StreamsConfig } = require('./config/streams-config');
@@ -31,6 +32,7 @@ module.exports = {
   ValueJoiner,
   KGroupedStream,
   TaskManager,
+  StateStoreManager,
   StreamsConfig,
   metrics,
   errors,

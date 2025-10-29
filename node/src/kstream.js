@@ -393,6 +393,7 @@ class KStream {
       keySerde,
       valueSerde,
       metadata,
+      restoreListeners: new Set(),
       builderMetadata: storeBuilder.describe(),
       describe: () => ({
         name,
@@ -890,7 +891,9 @@ class KStream {
         keySerde: store.keySerde,
         valueSerde: store.valueSerde,
         builder: store.builder,
-        builderMetadata: store.builder.describe()
+        builderMetadata: store.builder.describe(),
+        metadata: store.metadata ?? {},
+        restoreListeners: Array.from(store.restoreListeners ?? [])
       })),
       joinBuffers: this._joinBuffers.map(buffer => ({ ...buffer })),
       isSource: this.isSource,

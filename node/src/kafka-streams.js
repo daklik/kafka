@@ -4,6 +4,7 @@ const { Kafka } = require('@confluentinc/kafka-javascript');
 const EventEmitter = require('events');
 const { StreamsBuilder } = require('./streams-builder');
 const { TaskManager } = require('./runtime/task-manager');
+const { StateStoreManager } = require('./runtime/state-store-manager');
 const { StreamsConfig } = require('./config/streams-config');
 const { HandlerAction } = require('./errors');
 const { QueryMetadataManager, InteractiveQueryService } = require('./query');
@@ -32,6 +33,10 @@ class KafkaStreams extends EventEmitter {
     this._taskManager = new TaskManager({ topology: this.topology });
     this._taskManager.registerTopology(this.topology);
     this._metrics = this.config.getMetricsRegistry();
+    this._stateStoreManager = new StateStoreManager({ metrics: this._metrics });
+    this._stateStoreManager.on('restore:start', event => this.emit('state.restore.start', event));
+    this._stateStoreManager.on('restore:batch', event => this.emit('state.restore.batch', event));
+    this._stateStoreManager.on('restore:end', event => this.emit('state.restore.end', event));
     this._errorHandlers = this.config.getErrorHandlers();
     const interactiveConfig = this.config.getInteractiveQueryConfig?.() ?? {};
     this._queryMetadata = new QueryMetadataManager({
@@ -72,11 +77,12 @@ class KafkaStreams extends EventEmitter {
       stops.push(producer.disconnect?.().catch(err => this.emit('error', err)));
     }
     await Promise.all(stops);
-    for (const stores of this._stateStores.values()) {
+    for (const [streamId, stores] of this._stateStores.entries()) {
       for (const [name, store] of stores.entries()) {
         await store.close?.().catch(err => this.emit('error', err));
         this._queryMetadata?.deregisterStore(name);
       }
+      this._stateStoreManager?.reset(streamId);
     }
 
     this._consumers = [];
@@ -1007,13 +1013,19 @@ class KafkaStreams extends EventEmitter {
     const storeInstances = new Map();
     if (Array.isArray(stream.stateStores)) {
       for (const definition of stream.stateStores) {
-        if (!definition.builder) {
+        if (!definition?.builder) {
           continue;
         }
-        const instance = await definition.builder.build({ stream });
-        storeInstances.set(definition.name, instance);
+        const registered = this._stateStoreManager.registerDefinition(stream, definition);
+        const instance = await this._stateStoreManager.buildAndRegister({
+          stream,
+          definition: registered,
+          storeInstances
+        });
+        storeInstances.set(registered.name, instance);
       }
     }
+    this._stateStoreManager.bindExisting(stream, storeInstances);
     this._registerPrebuiltStateStores(stream, storeInstances);
     return storeInstances;
   }
