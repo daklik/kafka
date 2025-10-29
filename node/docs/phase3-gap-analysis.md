@@ -63,10 +63,10 @@ Phase 3 builds on the DSL parity delivered in Phase 2 and focuses on porting the
 ## 4. Dependencies and Risks
 | Area | Status | Notes |
 | --- | --- | --- |
-| Runtime scheduling | ⚠️ Risk | Node's single-threaded event loop requires careful handling of long-running punctuators; may need worker threads or cooperative yielding to avoid blocking record processing. |
+| Runtime scheduling | ✅ Validated | Wall-clock and stream-time punctuators are orchestrated through the `TaskManager` with fake-clock coverage to ensure deterministic firing and cancellation semantics. |
 | Kafka client integration | ✅ Mitigated | Existing consumer/producer factories already expose hooks for commit and metadata retrieval; Processor API work reuses these surfaces. |
-| State restoration | ⚠️ Risk | Changelog replay for custom stores may surface performance issues; plan incremental roll-out with metrics to monitor restore durations. |
-| Backpressure & forwarding | ⚠️ Risk | Processor chains with heavy async work could overwhelm downstream nodes; need guardrails in `forward` to detect unbounded buffering. |
+| State restoration | ✅ Validated | The `StateStoreManager` emits restore lifecycle events, registers listener hooks, and records metrics; unit tests cover offsets, batches, and interactive store access. |
+| Backpressure & forwarding | ⚠️ Tracking | `ProcessorContext` now guards `forward()` with `ForwardingDisabledException`, but async-heavy processors may still need cooperative yielding guidance in later phases. |
 
 ## 5. Deliverables
 - Processor API modules under `node/src/processor` with parity interfaces and lifecycle handling.
@@ -82,3 +82,10 @@ Phase 3 is complete when:
 - State restoration for processor-managed stores succeeds with metrics emitted for progress.
 - Test suites covering Processor API scenarios pass locally and in CI, with cross-language fixtures matching Java reference results.
 - Documentation directs users through Processor API setup, punctuation, and store registration without referencing Java source.
+
+## 7. Exit Criteria Validation
+- [x] **Processor execution parity** – `KStream#process`/`transform`/`transformValues` register processor suppliers, attach state stores, and the runtime instantiates `ProcessorContext` instances that manage forwarding queues, commits, and scheduling hooks.【F:node/src/kstream.js†L516-L546】【F:node/src/kafka-streams.js†L932-L995】
+- [x] **Topology metadata** – The shared builder registry exposes processor nodes, parent/child links, and attached state stores for both manual and DSL pipelines, exercised by targeted metadata tests.【F:node/test/processor-topology-builder.test.js†L1-L72】
+- [x] **State restoration lifecycle** – Processor-managed stores trigger restore events, listener callbacks, and metrics emissions validated by unit tests covering offsets and batch markers.【F:node/src/runtime/state-store-manager.js†L1-L168】【F:node/test/processor-state-store.test.js†L1-L92】
+- [x] **Scheduling fidelity** – Wall-clock and stream-time punctuators fire deterministically under fake-clock control and deduplicate registrations, matching Java semantics.【F:node/src/runtime/task-manager.js†L1-L140】【F:node/test/processor-scheduling.test.js†L1-L88】
+- [x] **Cross-language fixtures & docs** – Compatibility harness fixtures confirm Processor API outputs align with Java expectations, while documentation and examples guide adoption without relying on Java source code.【F:node/test/compatibility-harness.test.js†L1-L109】【F:node/docs/processor-api-guide.md†L1-L95】【F:node/examples/processor-pipeline.js†L1-L72】
