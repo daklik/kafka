@@ -16,6 +16,7 @@ const { SessionWindows } = require('./windows/session-windows');
 const { UnlimitedWindows } = require('./windows/unlimited-windows');
 const { Suppressed } = require('./suppressed');
 const { describeSerde, sanitizeValue } = require('./topology/utils');
+const { ProcessorSupplier } = require('./processor');
 
 class KStream {
   constructor({
@@ -104,6 +105,46 @@ class KStream {
     });
     this._lastNodeId = operationId;
     return operation;
+  }
+
+  _normalizeProcessorStores(options = {}) {
+    const stores = [];
+    const pushStore = value => {
+      if (!value) {
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.forEach(pushStore);
+        return;
+      }
+      stores.push(value);
+    };
+
+    pushStore(options.stateStores);
+    pushStore(options.stateStore);
+    pushStore(options.stateStoreName);
+    pushStore(options.store);
+
+    return stores;
+  }
+
+  _attachProcessorStateStores(operation, options = {}) {
+    if (!this._builder) {
+      return;
+    }
+
+    const stores = this._normalizeProcessorStores(options);
+    if (!stores.length) {
+      return;
+    }
+
+    for (const store of stores) {
+      if (store && typeof store.build === 'function') {
+        this._builder.addStateStore(store, operation.name);
+      } else if (typeof store === 'string') {
+        this._builder.connectProcessorAndStateStores(operation.name, store);
+      }
+    }
   }
 
   _sanitizeTopologyOptions(options) {
@@ -471,6 +512,33 @@ class KStream {
 
   mapValues(mapper, options = {}) {
     this._appendOperation('mapValues', mapper, options);
+    return this;
+  }
+
+  process(processorSupplier, options = {}) {
+    const supplier = ProcessorSupplier.from(processorSupplier);
+    const operation = this._appendOperation('processor', supplier, { ...options, processorType: 'process' });
+    operation.supplier = supplier;
+    operation.processorMode = 'process';
+    this._attachProcessorStateStores(operation, options);
+    return this;
+  }
+
+  transform(transformerSupplier, options = {}) {
+    const supplier = ProcessorSupplier.from(transformerSupplier);
+    const operation = this._appendOperation('processor', supplier, { ...options, processorType: 'transform' });
+    operation.supplier = supplier;
+    operation.processorMode = 'transform';
+    this._attachProcessorStateStores(operation, options);
+    return this;
+  }
+
+  transformValues(valueTransformerSupplier, options = {}) {
+    const supplier = ProcessorSupplier.from(valueTransformerSupplier);
+    const operation = this._appendOperation('processor', supplier, { ...options, processorType: 'transformValues' });
+    operation.supplier = supplier;
+    operation.processorMode = 'transformValues';
+    this._attachProcessorStateStores(operation, options);
     return this;
   }
 

@@ -54,11 +54,11 @@ Phase 3 builds on the DSL parity delivered in Phase 2 and focuses on porting the
 4. Hooked DSL builders into the shared node/state-store registry to ensure both DSL and Processor API paths rely on the same topology internals going forward.
 
 ### Step 6 – Testing, Samples, and Documentation (P2)
-**Status:** ⏳ Pending.
-1. Add unit tests for processors, transformers, punctuators, and state store registration under `node/test` mirroring Java `ProcessorTopologyTest` scenarios.
-2. Extend the compatibility harness to execute Java Processor API reference topologies (e.g., `transformValues`, punctuator-based sessionization) against shared fixtures.
-3. Publish documentation updates in `node/README.md` and new guides describing how to build custom processors, register stores, and interact with punctuators.
-4. Provide sample applications demonstrating processor chaining and schedule usage to validate ergonomics.
+**Status:** ✅ Complete.
+1. Added `processor-transformers.test.js` with end-to-end coverage for `transformValues` and `process` operations, validating state store registration and forwarded outputs alongside existing punctuator and context suites.
+2. Extended the compatibility harness with a Processor API fixture that mirrors Java `transformValues` behaviour so Node runs now assert against shared expectations.
+3. Published a dedicated Processor API guide, README pointers, and roadmap updates detailing how to register stores, schedule punctuators, and chain processors.
+4. Introduced a runnable sample under `node/examples` illustrating processor chaining and scheduled reporting to demonstrate ergonomics in practice.
 
 ## 4. Dependencies and Risks
 | Area | Status | Notes |
