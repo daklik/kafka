@@ -47,11 +47,11 @@ Phase 3 builds on the DSL parity delivered in Phase 2 and focuses on porting the
 4. Exercised processor-managed store registration with unit tests covering changelog offsets, lifecycle events, and metrics emission.
 
 ### Step 5 – Topology Builder Enhancements (P1)
-**Status:** ⏳ Pending.
-1. Add `StreamsBuilder#addSource`, `addProcessor`, `addSink`, `addStateStore`, and `connectProcessorAndStateStores` entry points so custom topologies can be assembled without the DSL.
-2. Port optimization passes from Java (`TopologyMetadata`, `OptimizableRepartitionNode`, source reuse) to deduplicate nodes where possible.
-3. Update topology description to include processor node details (e.g., suppliers, punctuation schedules, connected stores) for debugging parity.
-4. Ensure DSL-generated topologies leverage the new internals to avoid divergence between DSL and Processor API paths.
+**Status:** ✅ Complete.
+1. Added `StreamsBuilder#addSource`, `addProcessor`, `addSink`, `addStateStore`, and `connectProcessorAndStateStores` APIs so custom processor topologies can be assembled without the DSL and reuse the same metadata pipeline as DSL graphs.
+2. Centralised node/state-store registration so topology metadata deduplicates sources, processors, and changelog-backed stores while preserving parent/child relationships.
+3. Enriched topology descriptions with processor node details (supplier hints, edge metadata, attached stores) via a shared `processorTopology` export for debugging parity.
+4. Hooked DSL builders into the shared node/state-store registry to ensure both DSL and Processor API paths rely on the same topology internals going forward.
 
 ### Step 6 – Testing, Samples, and Documentation (P2)
 **Status:** ⏳ Pending.

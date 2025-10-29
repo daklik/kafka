@@ -81,6 +81,7 @@ class KStream {
     this.operations.push(operation);
     const fallbackName = `${type}-${operationId.slice(0, 6)}`;
     const name = Named.from(options.named, fallbackName) ?? fallbackName;
+    operation.name = name;
     this._topology.addNode({
       id: operationId,
       name,
@@ -91,6 +92,16 @@ class KStream {
       }
     });
     this._topology.connect(this._lastNodeId, operationId, { type: 'processor', operation: type });
+    this._builder?._registerNode({
+      id: operationId,
+      name,
+      type: 'processor',
+      metadata: {
+        operation: type,
+        options: this._sanitizeTopologyOptions(options)
+      },
+      parents: [this._lastNodeId]
+    });
     this._lastNodeId = operationId;
     return operation;
   }
@@ -379,6 +390,8 @@ class KStream {
     };
 
     this._topology.attachStateStore(operation.id, descriptor);
+    const storeDescriptor = this._builder?._getStateStoreDescriptor?.(storeName) ?? null;
+    this._builder?._attachStoreToNode({ nodeId: operation.id, storeName, descriptor: storeDescriptor });
 
     return this;
   }
@@ -405,6 +418,14 @@ class KStream {
       })
     };
     this.stateStores.set(name, definition);
+    this._builder?._registerStateStoreDescriptor({
+      name,
+      builder: storeBuilder,
+      builderMetadata: definition.builderMetadata,
+      keySerde,
+      valueSerde,
+      metadata
+    });
     return definition;
   }
 
@@ -605,6 +626,18 @@ class KStream {
       type: 'sink',
       topic,
       partitioner
+    });
+    this._builder?._registerNode({
+      id: sinkId,
+      name: sinkName,
+      type: 'sink',
+      metadata: {
+        topic,
+        keySerde: describeSerde(options.keySerde ?? this.keySerde),
+        valueSerde: describeSerde(options.valueSerde ?? this.valueSerde),
+        partitioner
+      },
+      parents: [this._lastNodeId]
     });
     this.sinks.push({
       type: 'topic',
@@ -824,6 +857,8 @@ class KStream {
           scope: 'stream-stream-join',
           metadata: this._sanitizeTopologyOptions(thisStore.metadata)
         });
+        const joinStoreDescriptor = this._builder?._getStateStoreDescriptor?.(thisStore.name) ?? null;
+        this._builder?._attachStoreToNode({ nodeId: joinOperation.id, storeName: thisStore.name, descriptor: joinStoreDescriptor });
       }
 
       this._topology.annotateNode(joinOperation.id, {
@@ -853,6 +888,8 @@ class KStream {
             tableType: otherStream.isGlobalKTable ? 'global' : 'table'
           })
         });
+        const tableStoreDescriptor = this._builder?._getStateStoreDescriptor?.(tableStore.name) ?? null;
+        this._builder?._attachStoreToNode({ nodeId: joinOperation.id, storeName: tableStore.name, descriptor: tableStoreDescriptor });
       }
 
       this._topology.annotateNode(joinOperation.id, {

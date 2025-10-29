@@ -52,6 +52,8 @@ kafkaStreams.on('error', console.error);
 - `stream(topic, options)` &rarr; creates a new `KStream` for the provided topic.
 - `table(topic, options)` &rarr; materializes a changelog topic as a queryable `KTable`.
 - `globalTable(topic, options)` &rarr; consumes a topic on every instance as a `GlobalKTable`.
+- `addSource(name, options)` / `addProcessor(name, supplier, parentNames)` / `addSink(name, topic, parentNames, options)` &rarr; build custom processor topologies without the DSL while reusing the same runtime metadata.
+- `addStateStore(storeBuilder, ...processorNames)` / `connectProcessorAndStateStores(processorNames, ...storeNames)` &rarr; register processor-managed state stores and attach them to topology nodes.
 - `build()` &rarr; returns the topology description used by `KafkaStreams`.
 
 ### KStream
