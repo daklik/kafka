@@ -16,6 +16,7 @@ const { SessionWindows } = require('./windows/session-windows');
 const { UnlimitedWindows } = require('./windows/unlimited-windows');
 const { Suppressed } = require('./suppressed');
 const { describeSerde, sanitizeValue } = require('./topology/utils');
+const { ProcessorSupplier } = require('./processor');
 
 class KStream {
   constructor({
@@ -81,6 +82,7 @@ class KStream {
     this.operations.push(operation);
     const fallbackName = `${type}-${operationId.slice(0, 6)}`;
     const name = Named.from(options.named, fallbackName) ?? fallbackName;
+    operation.name = name;
     this._topology.addNode({
       id: operationId,
       name,
@@ -91,8 +93,58 @@ class KStream {
       }
     });
     this._topology.connect(this._lastNodeId, operationId, { type: 'processor', operation: type });
+    this._builder?._registerNode({
+      id: operationId,
+      name,
+      type: 'processor',
+      metadata: {
+        operation: type,
+        options: this._sanitizeTopologyOptions(options)
+      },
+      parents: [this._lastNodeId]
+    });
     this._lastNodeId = operationId;
     return operation;
+  }
+
+  _normalizeProcessorStores(options = {}) {
+    const stores = [];
+    const pushStore = value => {
+      if (!value) {
+        return;
+      }
+      if (Array.isArray(value)) {
+        value.forEach(pushStore);
+        return;
+      }
+      stores.push(value);
+    };
+
+    pushStore(options.stateStores);
+    pushStore(options.stateStore);
+    pushStore(options.stateStoreName);
+    pushStore(options.store);
+
+    return stores;
+  }
+
+  _attachProcessorStateStores(operation, options = {}) {
+    if (!this._builder) {
+      return;
+    }
+
+    const stores = this._normalizeProcessorStores(options);
+    if (!stores.length) {
+      return;
+    }
+
+    for (const store of stores) {
+      if (store && typeof store.build === 'function') {
+        this._builder.addStateStore(store, operation.name);
+      } else if (typeof store === 'string') {
+        this._builder.connectProcessorAndStateStores(operation.name, store);
+      }
+    }
   }
 
   _sanitizeTopologyOptions(options) {
@@ -379,6 +431,8 @@ class KStream {
     };
 
     this._topology.attachStateStore(operation.id, descriptor);
+    const storeDescriptor = this._builder?._getStateStoreDescriptor?.(storeName) ?? null;
+    this._builder?._attachStoreToNode({ nodeId: operation.id, storeName, descriptor: storeDescriptor });
 
     return this;
   }
@@ -393,6 +447,7 @@ class KStream {
       keySerde,
       valueSerde,
       metadata,
+      restoreListeners: new Set(),
       builderMetadata: storeBuilder.describe(),
       describe: () => ({
         name,
@@ -404,6 +459,14 @@ class KStream {
       })
     };
     this.stateStores.set(name, definition);
+    this._builder?._registerStateStoreDescriptor({
+      name,
+      builder: storeBuilder,
+      builderMetadata: definition.builderMetadata,
+      keySerde,
+      valueSerde,
+      metadata
+    });
     return definition;
   }
 
@@ -449,6 +512,33 @@ class KStream {
 
   mapValues(mapper, options = {}) {
     this._appendOperation('mapValues', mapper, options);
+    return this;
+  }
+
+  process(processorSupplier, options = {}) {
+    const supplier = ProcessorSupplier.from(processorSupplier);
+    const operation = this._appendOperation('processor', supplier, { ...options, processorType: 'process' });
+    operation.supplier = supplier;
+    operation.processorMode = 'process';
+    this._attachProcessorStateStores(operation, options);
+    return this;
+  }
+
+  transform(transformerSupplier, options = {}) {
+    const supplier = ProcessorSupplier.from(transformerSupplier);
+    const operation = this._appendOperation('processor', supplier, { ...options, processorType: 'transform' });
+    operation.supplier = supplier;
+    operation.processorMode = 'transform';
+    this._attachProcessorStateStores(operation, options);
+    return this;
+  }
+
+  transformValues(valueTransformerSupplier, options = {}) {
+    const supplier = ProcessorSupplier.from(valueTransformerSupplier);
+    const operation = this._appendOperation('processor', supplier, { ...options, processorType: 'transformValues' });
+    operation.supplier = supplier;
+    operation.processorMode = 'transformValues';
+    this._attachProcessorStateStores(operation, options);
     return this;
   }
 
@@ -604,6 +694,18 @@ class KStream {
       type: 'sink',
       topic,
       partitioner
+    });
+    this._builder?._registerNode({
+      id: sinkId,
+      name: sinkName,
+      type: 'sink',
+      metadata: {
+        topic,
+        keySerde: describeSerde(options.keySerde ?? this.keySerde),
+        valueSerde: describeSerde(options.valueSerde ?? this.valueSerde),
+        partitioner
+      },
+      parents: [this._lastNodeId]
     });
     this.sinks.push({
       type: 'topic',
@@ -823,6 +925,8 @@ class KStream {
           scope: 'stream-stream-join',
           metadata: this._sanitizeTopologyOptions(thisStore.metadata)
         });
+        const joinStoreDescriptor = this._builder?._getStateStoreDescriptor?.(thisStore.name) ?? null;
+        this._builder?._attachStoreToNode({ nodeId: joinOperation.id, storeName: thisStore.name, descriptor: joinStoreDescriptor });
       }
 
       this._topology.annotateNode(joinOperation.id, {
@@ -852,6 +956,8 @@ class KStream {
             tableType: otherStream.isGlobalKTable ? 'global' : 'table'
           })
         });
+        const tableStoreDescriptor = this._builder?._getStateStoreDescriptor?.(tableStore.name) ?? null;
+        this._builder?._attachStoreToNode({ nodeId: joinOperation.id, storeName: tableStore.name, descriptor: tableStoreDescriptor });
       }
 
       this._topology.annotateNode(joinOperation.id, {
@@ -890,7 +996,9 @@ class KStream {
         keySerde: store.keySerde,
         valueSerde: store.valueSerde,
         builder: store.builder,
-        builderMetadata: store.builder.describe()
+        builderMetadata: store.builder.describe(),
+        metadata: store.metadata ?? {},
+        restoreListeners: Array.from(store.restoreListeners ?? [])
       })),
       joinBuffers: this._joinBuffers.map(buffer => ({ ...buffer })),
       isSource: this.isSource,

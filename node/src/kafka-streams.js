@@ -4,9 +4,11 @@ const { Kafka } = require('@confluentinc/kafka-javascript');
 const EventEmitter = require('events');
 const { StreamsBuilder } = require('./streams-builder');
 const { TaskManager } = require('./runtime/task-manager');
+const { StateStoreManager } = require('./runtime/state-store-manager');
 const { StreamsConfig } = require('./config/streams-config');
 const { HandlerAction } = require('./errors');
 const { QueryMetadataManager, InteractiveQueryService } = require('./query');
+const { ProcessorContext, RecordContext, callLifecycle } = require('./processor');
 
 const SKIP_RECORD = Symbol.for('kafka-streams-skip-record');
 
@@ -31,6 +33,10 @@ class KafkaStreams extends EventEmitter {
     this._taskManager = new TaskManager({ topology: this.topology });
     this._taskManager.registerTopology(this.topology);
     this._metrics = this.config.getMetricsRegistry();
+    this._stateStoreManager = new StateStoreManager({ metrics: this._metrics });
+    this._stateStoreManager.on('restore:start', event => this.emit('state.restore.start', event));
+    this._stateStoreManager.on('restore:batch', event => this.emit('state.restore.batch', event));
+    this._stateStoreManager.on('restore:end', event => this.emit('state.restore.end', event));
     this._errorHandlers = this.config.getErrorHandlers();
     const interactiveConfig = this.config.getInteractiveQueryConfig?.() ?? {};
     this._queryMetadata = new QueryMetadataManager({
@@ -44,6 +50,7 @@ class KafkaStreams extends EventEmitter {
     this._interactiveQueryService = new InteractiveQueryService({
       metadataManager: this._queryMetadata
     });
+    this._processorInstances = new Map();
   }
 
   async start() {
@@ -70,18 +77,29 @@ class KafkaStreams extends EventEmitter {
     for (const producer of this._producers) {
       stops.push(producer.disconnect?.().catch(err => this.emit('error', err)));
     }
+    const processorCloses = [];
+    for (const perStream of this._processorInstances.values()) {
+      for (const runtime of perStream.values()) {
+        for (const instance of runtime.instances.values()) {
+          processorCloses.push(callLifecycle(instance.processor, 'close').catch(error => this.emit('error', error)));
+        }
+      }
+    }
+    await Promise.all(processorCloses);
     await Promise.all(stops);
-    for (const stores of this._stateStores.values()) {
+    for (const [streamId, stores] of this._stateStores.entries()) {
       for (const [name, store] of stores.entries()) {
         await store.close?.().catch(err => this.emit('error', err));
         this._queryMetadata?.deregisterStore(name);
       }
+      this._stateStoreManager?.reset(streamId);
     }
 
     this._consumers = [];
     this._producers = [];
     this._kafka = null;
     this._stateStores.clear();
+    this._processorInstances.clear();
     this._running = false;
     this.emit('stopped');
   }
@@ -108,7 +126,15 @@ class KafkaStreams extends EventEmitter {
       eachMessage: async payload => {
         try {
           await this._processMessage(stream, payload, producer, stateStores);
-          this._taskManager.recordProcessed(stream.id, payload.partition, payload.message?.offset);
+          const messageTimestamp = payload.message?.timestamp != null
+            ? Number(payload.message.timestamp)
+            : Date.now();
+          await this._taskManager.recordProcessed(
+            stream.id,
+            payload.partition,
+            payload.message?.offset,
+            messageTimestamp
+          );
         } catch (err) {
           this._metrics.record('stream.records.failed', 1, { streamId: stream.id });
           this.emit('error', err);
@@ -127,6 +153,7 @@ class KafkaStreams extends EventEmitter {
     const valueBuffer = message.value;
     const headers = message.headers ?? {};
     const timestamp = message.timestamp ? Number(message.timestamp) : Date.now();
+    const offset = message.offset != null ? Number(message.offset) : null;
 
     this._metrics.record('stream.records.consumed', 1, { streamId: stream.id, topic });
 
@@ -152,13 +179,16 @@ class KafkaStreams extends EventEmitter {
       return [];
     }
 
+    const recordContext = new RecordContext({ topic, partition, offset, timestamp, headers });
     const record = {
       topic,
       partition,
       headers,
       timestamp,
+      offset,
       key,
-      value
+      value,
+      recordContext
     };
 
     await this._bufferStreamJoins(stream, record, stores);
@@ -189,7 +219,7 @@ class KafkaStreams extends EventEmitter {
 
       switch (operation.type) {
         case 'map':
-          records = await Promise.all(records.map(async r => this._normalizeRecord(await operation.fn(r))));
+          records = await Promise.all(records.map(async r => this._normalizeRecord(await operation.fn(r), r)));
           break;
         case 'mapValues':
           records = await Promise.all(records.map(async r => ({ ...r, value: await operation.fn(r.value, r) })));
@@ -216,7 +246,7 @@ class KafkaStreams extends EventEmitter {
             if (!Array.isArray(produced)) {
               throw new Error('flatMap operation must return an array of records');
             }
-            return produced.map(item => this._normalizeRecord(item));
+            return produced.map(item => this._normalizeRecord(item, r));
           }))).flat();
           break;
         case 'flatMapValues':
@@ -253,6 +283,9 @@ class KafkaStreams extends EventEmitter {
           break;
         case 'join':
           records = await this._applyJoin(stream, operation, records, producer, headers, timestamp);
+          break;
+        case 'processor':
+          records = await this._applyProcessorOperation(stream, operation, records, producer, stores);
           break;
         default:
           throw new Error(`Unsupported operation type: ${operation.type}`);
@@ -300,20 +333,66 @@ class KafkaStreams extends EventEmitter {
     }
   }
 
-  _normalizeRecord(record) {
+  _normalizeRecord(record, sourceRecord = null) {
     if (!record || typeof record !== 'object') {
       throw new Error('map and flatMap operations must return an object with key/value pairs');
     }
     if (!('value' in record)) {
       throw new Error('Record must have a value property');
     }
+    const sourceContext = sourceRecord?.recordContext instanceof RecordContext ? sourceRecord.recordContext : null;
+    const providedContext = record.recordContext instanceof RecordContext ? record.recordContext : null;
+
+    const topic = record.topic ?? providedContext?.topic() ?? sourceContext?.topic() ?? sourceRecord?.topic ?? null;
+    const partition = record.partition ?? providedContext?.partition() ?? sourceContext?.partition() ?? sourceRecord?.partition ?? null;
+    const timestamp = record.timestamp != null
+      ? Number(record.timestamp)
+      : providedContext?.timestamp() ?? sourceContext?.timestamp() ?? sourceRecord?.timestamp ?? Date.now();
+    const offset = record.offset != null
+      ? Number(record.offset)
+      : providedContext?.offset() ?? sourceContext?.offset() ?? sourceRecord?.offset ?? null;
+
+    const resolvedHeaders = (() => {
+      if (record.headers) {
+        return { ...record.headers };
+      }
+      if (providedContext) {
+        return { ...providedContext.headers() };
+      }
+      if (sourceContext) {
+        return { ...sourceContext.headers() };
+      }
+      if (sourceRecord?.headers) {
+        return { ...sourceRecord.headers };
+      }
+      return {};
+    })();
+
+    const recordContext = providedContext ?? (sourceContext
+      ? sourceContext.withUpdates({
+        topic,
+        partition,
+        timestamp,
+        offset,
+        headers: resolvedHeaders
+      })
+      : new RecordContext({
+        topic,
+        partition,
+        timestamp,
+        offset,
+        headers: resolvedHeaders
+      }));
+
     return {
-      topic: record.topic,
-      partition: record.partition,
-      headers: record.headers ?? {},
-      timestamp: record.timestamp ?? Date.now(),
+      topic,
+      partition,
+      headers: resolvedHeaders,
+      timestamp,
+      offset,
       key: 'key' in record ? record.key : undefined,
-      value: record.value
+      value: record.value,
+      recordContext
     };
   }
 
@@ -793,6 +872,150 @@ class KafkaStreams extends EventEmitter {
     throw new Error('Unsupported join target type');
   }
 
+  async _applyProcessorOperation(stream, operation, records, producer, stores) {
+    if (!records.length) {
+      return records;
+    }
+
+    const results = [];
+    const mode = operation.processorMode ?? operation.options?.processorType ?? 'process';
+
+    for (const record of records) {
+      const partition = record.partition ?? 0;
+      const instance = await this._ensureProcessorInstance({ stream, operation, partition, stores });
+      instance.processing = true;
+      instance.currentRecord = record;
+      instance.forwardQueue.length = 0;
+      instance.context.setCurrentNode(operation.name ?? null);
+      if (record.recordContext instanceof RecordContext) {
+        instance.context.setRecordContext(record.recordContext);
+      } else {
+        instance.context.setRecordContext(new RecordContext(record.recordContext ?? record));
+      }
+
+      if (mode === 'process') {
+        await callLifecycle(instance.processor, 'process', [record]);
+      } else if (mode === 'transform') {
+        const transformed = await callLifecycle(instance.processor, 'transform', [record.key, record.value, record.headers ?? {}]);
+        if (transformed !== null && transformed !== undefined) {
+          results.push(this._normalizeRecord(transformed, record));
+        }
+      } else if (mode === 'transformValues') {
+        const updatedValue = await callLifecycle(instance.processor, 'transform', [record.value]);
+        results.push({ ...record, value: updatedValue });
+      } else {
+        throw new Error(`Unsupported processor operation mode: ${mode}`);
+      }
+
+      if (instance.forwardQueue.length) {
+        results.push(...instance.forwardQueue);
+        instance.forwardQueue.length = 0;
+      }
+
+      instance.processing = false;
+      instance.currentRecord = null;
+    }
+
+    return results;
+  }
+
+  async _ensureProcessorInstance({ stream, operation, partition, stores }) {
+    let perStream = this._processorInstances.get(stream.id);
+    if (!perStream) {
+      perStream = new Map();
+      this._processorInstances.set(stream.id, perStream);
+    }
+
+    let runtime = perStream.get(operation.id);
+    if (!runtime) {
+      runtime = {
+        supplier: operation.supplier ?? operation.fn,
+        mode: operation.processorMode ?? operation.options?.processorType ?? 'process',
+        instances: new Map()
+      };
+      perStream.set(operation.id, runtime);
+    }
+
+    let instance = runtime.instances.get(partition);
+    if (!instance) {
+      const supplier = runtime.supplier;
+      if (!supplier || typeof supplier.get !== 'function') {
+        throw new Error(`Processor operation ${operation.name ?? operation.id} is missing a ProcessorSupplier.`);
+      }
+
+      const processor = supplier.get();
+      const forwardQueue = [];
+      let contextInstance = null;
+      const context = new ProcessorContext({
+        applicationId: this.config.applicationId,
+        taskId: `${stream.id}-${partition}`,
+        forwarder: record => {
+          if (contextInstance?.processing) {
+            forwardQueue.push(this._normalizeRecord(record, contextInstance.currentRecord));
+            return;
+          }
+          forwardQueue.push(this._normalizeRecord(record, null));
+        },
+        committer: () => this._commitProcessor(stream, partition),
+        scheduler: this._taskManager.createScheduler({
+          streamId: stream.id,
+          partition,
+          contextProvider: () => contextInstance?.context ?? null,
+          nodeName: operation.name
+        }),
+        stateStoreRegistrar: payload => this._registerProcessorStore({ stream, payload, stores }),
+        stateStoreProvider: storeName => stores.get(storeName) ?? this._stateStoreManager.getStore(stream.id, storeName)
+      });
+
+      contextInstance = {
+        processor,
+        context,
+        forwardQueue,
+        currentRecord: null,
+        processing: false,
+        mode: runtime.mode
+      };
+
+      runtime.instances.set(partition, contextInstance);
+      await callLifecycle(processor, 'init', [context]);
+      instance = contextInstance;
+    }
+
+    return instance;
+  }
+
+  async _registerProcessorStore({ stream, payload, stores }) {
+    const builder = payload.storeBuilder ?? payload.builder ?? null;
+    const storeName = payload.storeName ?? builder?.name ?? null;
+    const store = await this._stateStoreManager.registerStore({
+      stream,
+      builder,
+      storeName,
+      keySerde: payload.keySerde ?? null,
+      valueSerde: payload.valueSerde ?? null,
+      metadata: payload.metadata ?? {},
+      stateRestoreListener: payload.stateRestoreListener ?? null,
+      restoreBatches: payload.restoreBatches ?? [],
+      restoreOffsets: payload.restoreOffsets ?? {}
+    });
+
+    if (store && storeName) {
+      let perStream = this._stateStores.get(stream.id);
+      if (!perStream) {
+        perStream = new Map();
+        this._stateStores.set(stream.id, perStream);
+      }
+      perStream.set(storeName, store);
+      stores.set(storeName, store);
+    }
+
+    return store;
+  }
+
+  async _commitProcessor(_stream, _partition) {
+    return Promise.resolve();
+  }
+
   async _applyStreamTableJoin({ stream, operation, records, tableStream }) {
     const options = operation.options ?? {};
     const storeName = options.storeName ?? tableStream.materialized?.storeName;
@@ -948,13 +1171,19 @@ class KafkaStreams extends EventEmitter {
     const storeInstances = new Map();
     if (Array.isArray(stream.stateStores)) {
       for (const definition of stream.stateStores) {
-        if (!definition.builder) {
+        if (!definition?.builder) {
           continue;
         }
-        const instance = await definition.builder.build({ stream });
-        storeInstances.set(definition.name, instance);
+        const registered = this._stateStoreManager.registerDefinition(stream, definition);
+        const instance = await this._stateStoreManager.buildAndRegister({
+          stream,
+          definition: registered,
+          storeInstances
+        });
+        storeInstances.set(registered.name, instance);
       }
     }
+    this._stateStoreManager.bindExisting(stream, storeInstances);
     this._registerPrebuiltStateStores(stream, storeInstances);
     return storeInstances;
   }

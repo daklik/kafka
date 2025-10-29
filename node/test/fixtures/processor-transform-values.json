@@ -1,0 +1,14 @@
+{
+  "inputTopic": "compat-transform-input",
+  "outputTopic": "compat-transform-output",
+  "records": [
+    { "key": "a", "value": "Alpha", "timestamp": 1700000000000 },
+    { "key": "b", "value": "Beta", "timestamp": 1700000000001 },
+    { "key": "c", "value": "Alpha", "timestamp": 1700000000002 }
+  ],
+  "expected": [
+    { "key": "a", "value": "alpha:1" },
+    { "key": "b", "value": "beta:1" },
+    { "key": "c", "value": "alpha:2" }
+  ]
+}

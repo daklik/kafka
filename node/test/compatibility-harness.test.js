@@ -3,8 +3,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { StreamsBuilder, KafkaStreams, Serde, MemoryStateStore } = require('../src');
+const { StreamsBuilder, KafkaStreams, Serde, MemoryStateStore, Stores } = require('../src');
 const fixture = require('./fixtures/word-count.json');
+const transformFixture = require('./fixtures/processor-transform-values.json');
 
 class HarnessProducer {
   constructor() {
@@ -65,4 +66,57 @@ test('word count compatibility harness matches Java expectations', async () => {
     .sort((a, b) => a.key.localeCompare(b.key));
 
   assert.deepEqual(actual, expected);
+});
+
+class CountingHarnessTransformer {
+  constructor(storeBuilder) {
+    this._storeBuilder = storeBuilder;
+    this._store = null;
+  }
+
+  async init(context) {
+    await context.register(this._storeBuilder);
+    this._store = context.getStateStore(this._storeBuilder.name);
+  }
+
+  async transform(value) {
+    const key = value.toLowerCase();
+    const current = (await this._store.get(key)) ?? 0;
+    const next = current + 1;
+    await this._store.put(key, next);
+    return `${key}:${next}`;
+  }
+}
+
+test('transformValues processor compatibility matches Java expectations', async () => {
+  const builder = new StreamsBuilder();
+  const storeBuilder = Stores.inMemoryKeyValueStore('compat-transform-store');
+
+  builder
+    .stream(transformFixture.inputTopic, { keySerde: Serde.string(), valueSerde: Serde.string() })
+    .transformValues(() => new CountingHarnessTransformer(storeBuilder), { stateStore: storeBuilder })
+    .to(transformFixture.outputTopic, { valueSerde: Serde.string() });
+
+  const topology = builder.build();
+  const kafkaStreams = new KafkaStreams(topology, { applicationId: 'compat-transform-values' });
+  const stream = topology.streams.find(s => s.sourceTopic === transformFixture.inputTopic);
+  const stores = await kafkaStreams._ensureStateStores(stream);
+  const producer = new HarnessProducer();
+
+  for (const [index, record] of transformFixture.records.entries()) {
+    const payload = {
+      topic: transformFixture.inputTopic,
+      partition: 0,
+      message: {
+        key: record.key ? Buffer.from(record.key) : null,
+        value: Buffer.from(record.value),
+        headers: {},
+        timestamp: String(record.timestamp ?? Date.now() + index)
+      }
+    };
+    await kafkaStreams._processMessage(stream, payload, producer, stores);
+  }
+
+  const actual = producer.produced.map(entry => ({ key: entry.key, value: entry.value }));
+  assert.deepEqual(actual, transformFixture.expected);
 });

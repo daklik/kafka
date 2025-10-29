@@ -52,6 +52,8 @@ kafkaStreams.on('error', console.error);
 - `stream(topic, options)` &rarr; creates a new `KStream` for the provided topic.
 - `table(topic, options)` &rarr; materializes a changelog topic as a queryable `KTable`.
 - `globalTable(topic, options)` &rarr; consumes a topic on every instance as a `GlobalKTable`.
+- `addSource(name, options)` / `addProcessor(name, supplier, parentNames)` / `addSink(name, topic, parentNames, options)` &rarr; build custom processor topologies without the DSL while reusing the same runtime metadata.
+- `addStateStore(storeBuilder, ...processorNames)` / `connectProcessorAndStateStores(processorNames, ...storeNames)` &rarr; register processor-managed state stores and attach them to topology nodes.
 - `build()` &rarr; returns the topology description used by `KafkaStreams`.
 
 ### KStream
@@ -62,6 +64,7 @@ Transformation and branching primitives mirror the Java DSL:
 - `filter(predicate)` / `filterNot(predicate)`
 - `flatMap(mapper)` / `flatMapValues(mapper)`
 - `peek(sideEffect)` / `foreach(sideEffect)`
+- `process(processorSupplier, options)` / `transform(transformerSupplier, options)` / `transformValues(valueTransformerSupplier, options)` for Processor API interoperability with state store registration and scheduling hooks
 - `groupBy(selector)` / `groupByKey()` returning a `KGroupedStream` for windowed aggregations
 - `aggregate(initializer, aggregator, options)` / `count(options)` / `reduce(reducer, options)`
 - `branch(...predicates)`
@@ -337,7 +340,17 @@ ainst the Node.js runtime and validates parity with Java word-count expectations
 - [Roadmap](docs/roadmap.md)
 - [Phase 1 Gap Analysis](docs/phase1-gap-analysis.md)
 - [Phase 2 Gap Analysis](docs/phase2-gap-analysis.md)
+- [Phase 3 Gap Analysis](docs/phase3-gap-analysis.md)
 
 ## License
 
 [Apache License 2.0](../LICENSE)
+### Processor API
+
+The Node port now supports the core Processor API entry points alongside the DSL. Refer to the [Processor API Guide](docs/processor-api-guide.md) for examples covering:
+
+- Creating custom `transformValues`/`process` nodes that reuse Java `Processor` and `ValueTransformer` semantics.
+- Registering and querying processor-managed state stores.
+- Scheduling punctuators via `ProcessorContext#schedule` to emit periodic results.
+- Inspecting the processor topology and leveraging the compatibility harness fixtures for regression testing.
+

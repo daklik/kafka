@@ -1,13 +1,50 @@
 'use strict';
 
 const EventEmitter = require('events');
+const { PunctuationType } = require('../processor/context');
+
+const DEFAULT_CLOCK = {
+  now: () => Date.now(),
+  setTimeout: (fn, delay) => setTimeout(fn, delay),
+  clearTimeout: timer => clearTimeout(timer)
+};
+
+function normalizeClock(clock = {}) {
+  if (!clock) {
+    return DEFAULT_CLOCK;
+  }
+
+  const now = typeof clock.now === 'function' ? clock.now.bind(clock) : DEFAULT_CLOCK.now;
+  const setTimeoutFn = typeof clock.setTimeout === 'function'
+    ? clock.setTimeout.bind(clock)
+    : DEFAULT_CLOCK.setTimeout;
+  const clearTimeoutFn = typeof clock.clearTimeout === 'function'
+    ? clock.clearTimeout.bind(clock)
+    : DEFAULT_CLOCK.clearTimeout;
+
+  return {
+    now,
+    setTimeout: setTimeoutFn,
+    clearTimeout: clearTimeoutFn
+  };
+}
+
+function toTimestamp(value) {
+  if (value == null) {
+    return null;
+  }
+  const numeric = Number(value);
+  return Number.isNaN(numeric) ? null : numeric;
+}
 
 class TaskManager extends EventEmitter {
-  constructor({ topology } = {}) {
+  constructor({ topology, clock } = {}) {
     super();
     this.topology = topology;
     this._tasks = new Map();
     this._consumers = new Map();
+    this._punctuators = new Map();
+    this._clock = normalizeClock(clock);
   }
 
   registerTopology(topology) {
@@ -29,6 +66,7 @@ class TaskManager extends EventEmitter {
         const task = this._ensureTask(streamId, partition);
         task.state = 'assigned';
         task.assignmentEpoch = (task.assignmentEpoch ?? 0) + 1;
+        task.lastUpdate = this._clock.now();
       }
     }
     if (event?.revokedPartitions) {
@@ -36,17 +74,216 @@ class TaskManager extends EventEmitter {
         const task = tasks.get(partition);
         if (task) {
           task.state = 'revoked';
+          task.lastUpdate = this._clock.now();
+          this._cancelTaskPunctuators(streamId, partition);
         }
       }
     }
     this.emit('rebalance', { streamId, eventName, event, tasks: this.snapshot(streamId) });
   }
 
-  recordProcessed(streamId, partition, offset) {
+  async recordProcessed(streamId, partition, offset, timestamp) {
     const task = this._ensureTask(streamId, partition);
     task.lastOffset = offset != null ? Number(offset) : null;
-    task.lastUpdate = Date.now();
+    task.lastUpdate = this._clock.now();
     task.state = task.state ?? 'running';
+
+    const numericTimestamp = toTimestamp(timestamp);
+    if (numericTimestamp != null) {
+      const previous = task.streamTime ?? Number.NEGATIVE_INFINITY;
+      task.streamTime = Math.max(previous, numericTimestamp);
+      await this._runStreamTimePunctuators(streamId, partition, task.streamTime);
+    }
+  }
+
+  createScheduler({ streamId, partition, contextProvider = () => null, nodeName = null } = {}) {
+    if (!streamId) {
+      throw new TypeError('TaskManager#createScheduler requires a streamId.');
+    }
+    return (intervalMs, punctuator, options = {}) => this._schedulePunctuator({
+      streamId,
+      partition,
+      intervalMs,
+      punctuator,
+      options,
+      contextProvider,
+      nodeName
+    });
+  }
+
+  _schedulePunctuator({
+    streamId,
+    partition,
+    intervalMs,
+    punctuator,
+    options = {},
+    contextProvider,
+    nodeName
+  }) {
+    if (typeof intervalMs !== 'number' || Number.isNaN(intervalMs) || intervalMs <= 0) {
+      throw new TypeError('Punctuators require a positive interval.');
+    }
+    if (typeof punctuator !== 'function') {
+      throw new TypeError('Punctuator must be a function.');
+    }
+
+    const type = options.type ?? PunctuationType.WALL_CLOCK_TIME;
+    const task = this._ensureTask(streamId, partition);
+
+    let perStream = this._punctuators.get(streamId);
+    if (!perStream) {
+      perStream = new Map();
+      this._punctuators.set(streamId, perStream);
+    }
+    let handles = perStream.get(partition);
+    if (!handles) {
+      handles = new Set();
+      perStream.set(partition, handles);
+    }
+
+    for (const existing of handles) {
+      if (!existing.cancelled && existing.type === type && existing.intervalMs === intervalMs && existing.punctuator === punctuator && existing.nodeName === (nodeName ?? null)) {
+        return existing.publicHandle;
+      }
+    }
+
+    const handle = {
+      streamId,
+      partition,
+      intervalMs,
+      punctuator,
+      type,
+      nodeName: nodeName ?? null,
+      contextProvider,
+      cancelled: false,
+      timer: null,
+      nextTimestamp: null,
+      publicHandle: null
+    };
+
+    handle.cancel = () => {
+      if (handle.cancelled) {
+        return;
+      }
+      handle.cancelled = true;
+      if (handle.timer != null) {
+        this._clock.clearTimeout(handle.timer);
+        handle.timer = null;
+      }
+      handles.delete(handle);
+      if (handles.size === 0) {
+        perStream.delete(partition);
+        if (perStream.size === 0) {
+          this._punctuators.delete(streamId);
+        }
+      }
+    };
+
+    handle.publicHandle = {
+      cancel: () => handle.cancel()
+    };
+
+    handles.add(handle);
+
+    if (type === PunctuationType.WALL_CLOCK_TIME) {
+      this._scheduleWallClock(handle, options.initialDelay ?? intervalMs);
+    } else if (type === PunctuationType.STREAM_TIME) {
+      this._initializeStreamTimeHandle(handle, task);
+    } else {
+      throw new TypeError(`Unsupported punctuation type: ${type}`);
+    }
+
+    return handle.publicHandle;
+  }
+
+  _initializeStreamTimeHandle(handle, task) {
+    const context = typeof handle.contextProvider === 'function' ? handle.contextProvider() : null;
+    const contextTimestamp = context?.recordContext?.()?.timestamp?.();
+    const baseline = toTimestamp(contextTimestamp) ?? toTimestamp(task.streamTime);
+    if (baseline != null) {
+      handle.nextTimestamp = baseline + handle.intervalMs;
+    } else {
+      handle.nextTimestamp = null;
+    }
+  }
+
+  _scheduleWallClock(handle, initialDelay) {
+    const delay = initialDelay ?? handle.intervalMs;
+    const run = async () => {
+      if (handle.cancelled) {
+        return;
+      }
+      try {
+        await this._invokePunctuator(handle, this._clock.now());
+      } catch (error) {
+        // Already emitted via _invokePunctuator; swallow to keep interval running.
+      }
+      if (!handle.cancelled) {
+        handle.timer = this._clock.setTimeout(run, handle.intervalMs);
+      }
+    };
+
+    handle.timer = this._clock.setTimeout(run, delay);
+  }
+
+  async _runStreamTimePunctuators(streamId, partition, currentTimestamp) {
+    const perStream = this._punctuators.get(streamId);
+    const handles = perStream?.get(partition);
+    if (!handles || handles.size === 0) {
+      return;
+    }
+
+    const ordered = Array.from(handles)
+      .filter(handle => !handle.cancelled && handle.type === PunctuationType.STREAM_TIME)
+      .sort((a, b) => {
+        const aTime = a.nextTimestamp ?? Number.POSITIVE_INFINITY;
+        const bTime = b.nextTimestamp ?? Number.POSITIVE_INFINITY;
+        return aTime - bTime;
+      });
+
+    for (const handle of ordered) {
+      if (handle.nextTimestamp == null) {
+        handle.nextTimestamp = currentTimestamp + handle.intervalMs;
+      }
+      while (!handle.cancelled && handle.nextTimestamp != null && currentTimestamp >= handle.nextTimestamp) {
+        await this._invokePunctuator(handle, handle.nextTimestamp);
+        if (handle.cancelled) {
+          break;
+        }
+        handle.nextTimestamp += handle.intervalMs;
+      }
+    }
+  }
+
+  async _invokePunctuator(handle, timestamp) {
+    const context = typeof handle.contextProvider === 'function' ? handle.contextProvider() : null;
+    try {
+      await Promise.resolve(handle.punctuator(timestamp, context));
+    } catch (error) {
+      this.emit('punctuator.error', {
+        error,
+        streamId: handle.streamId,
+        partition: handle.partition,
+        type: handle.type,
+        nodeName: handle.nodeName,
+        timestamp
+      });
+      throw error;
+    }
+  }
+
+  _cancelTaskPunctuators(streamId, partition) {
+    const perStream = this._punctuators.get(streamId);
+    if (!perStream) {
+      return;
+    }
+    const handles = perStream.get(partition);
+    if (!handles) {
+      return;
+    }
+    for (const handle of Array.from(handles)) {
+      handle.cancel();
+    }
   }
 
   _ensureTask(streamId, partition) {
@@ -63,7 +300,8 @@ class TaskManager extends EventEmitter {
         state: 'created',
         assignmentEpoch: 0,
         lastOffset: null,
-        lastUpdate: Date.now()
+        lastUpdate: this._clock.now(),
+        streamTime: null
       };
       tasks.set(partition, task);
     }
