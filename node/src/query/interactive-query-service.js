@@ -36,12 +36,25 @@ class InteractiveQueryService {
     }
 
     if (route.type === 'remote') {
-      return this.metadataManager.getRpcClient().fetchKeyValue({
-        hostInfo: route.hostInfo,
-        storeName,
-        key,
-        options
-      });
+      const client = this.metadataManager.getRpcClient();
+      const candidates = route.candidates ?? [{ hostInfo: route.hostInfo, standby: route.standby }];
+      let lastError = null;
+      for (const candidate of candidates) {
+        try {
+          return await client.fetchKeyValue({
+            hostInfo: candidate.hostInfo,
+            storeName,
+            key,
+            options: { ...options, role: candidate.standby ? 'standby' : 'active' }
+          });
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (lastError) {
+        throw lastError;
+      }
+      throw new Error(`No remote candidates available for store ${storeName}`);
     }
 
     throw new Error(`Unsupported query route type: ${route.type}`);

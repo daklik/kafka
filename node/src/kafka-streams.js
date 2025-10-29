@@ -48,6 +48,7 @@ class KafkaStreams extends EventEmitter {
     this._stateStoreManager.on('restore:end', event => this.emit('state.restore.end', event));
     this._taskManager.on('task.transition', event => this.emit('task.transition', event));
     this._taskManager.on('task.lag', event => this.emit('task.lag', event));
+    this._taskManager.on('rebalance', event => this._handleTaskRebalance(event));
     this._errorHandlers = this.config.getErrorHandlers();
     const interactiveConfig = this.config.getInteractiveQueryConfig?.() ?? {};
     this._queryMetadata = new QueryMetadataManager({
@@ -1256,12 +1257,57 @@ class KafkaStreams extends EventEmitter {
     return this._interactiveQueryService?.metadataForStore(storeName) ?? [];
   }
 
+  refreshQueryMetadata(snapshot) {
+    this._queryMetadata?.refreshFromSnapshot(snapshot);
+  }
+
   getInteractiveQueryService() {
     return this._interactiveQueryService;
   }
 
-  registerRemoteStoreMetadata({ storeName, hostInfo, topicPartitions }) {
-    this._queryMetadata?.registerRemoteStore({ storeName, hostInfo, topicPartitions });
+  registerRemoteStoreMetadata({ storeName, hostInfo, topicPartitions, standby = false }) {
+    this._queryMetadata?.registerRemoteStore({ storeName, hostInfo, topicPartitions, standby });
+  }
+
+  _handleTaskRebalance(event = {}) {
+    if (!this._queryMetadata || !event.streamId) {
+      return;
+    }
+    const stream = this._streamIndex.get(event.streamId);
+    if (!stream) {
+      return;
+    }
+    const tasks = Array.isArray(event.tasks) ? event.tasks : [];
+    const active = new Set();
+    const standby = new Set();
+    for (const task of tasks) {
+      const partition = task?.partition;
+      if (partition == null) {
+        continue;
+      }
+      const numeric = Number(partition);
+      if (Number.isNaN(numeric)) {
+        continue;
+      }
+      if (task?.standby || task?.type === 'standby') {
+        standby.add(numeric);
+      } else {
+        active.add(numeric);
+      }
+    }
+    const topic = stream.sourceTopic ?? null;
+    const definitions = Array.isArray(stream.stateStores) ? stream.stateStores : [];
+    for (const definition of definitions) {
+      if (!definition?.name) {
+        continue;
+      }
+      this._queryMetadata.updateLocalAssignment({
+        storeName: definition.name,
+        topic,
+        activePartitions: Array.from(active),
+        standbyPartitions: Array.from(standby)
+      });
+    }
   }
 
   async _safeDeserialize({ stream, payload, component, buffer, serde }) {

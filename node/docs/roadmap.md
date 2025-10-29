@@ -50,7 +50,7 @@ _Deliverable_: Production-grade runtime managing tasks, rebalances, and EOS mode
 4. **State Store Metrics**: Replicate cache hit ratios, restore metrics, and store-level gauges.
 
 _Deliverable_: Robust state store module with materialization and query parity.
-**Status:** Steps 1–3 completed with persistent RocksDB stores, changelog wiring, and window/session builders documented in the [Phase 5 Gap Analysis](phase5-state-store-gap-analysis.md); remaining milestones cover interactive queries, metrics, and documentation.
+**Status:** Steps 1–4 completed with persistent RocksDB stores, changelog wiring, window/session builders, and interactive query metadata/RPC documented in the [Phase 5 Gap Analysis](phase5-state-store-gap-analysis.md); remaining milestones cover metrics and documentation.
 
 ## Phase 6 – SerDes, Schema Integration, and Type Safety
 1. **Built-in Serdes**: Provide Avro, JSON Schema, Protobuf serdes consistent with `Serdes` utilities, leveraging Confluent Schema Registry clients.

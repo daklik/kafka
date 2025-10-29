@@ -42,10 +42,10 @@ Phase 5 focuses on delivering production-ready state stores and interactive quer
 3. Extended `Stores` with `persistentWindowStore`/`persistentSessionStore` builders that describe window metadata, and added unit tests covering persistence, purge behaviour, and key range queries.
 
 ### Step 4 – Interactive Query Metadata & RPC (P1)
-**Status:** ⏳ Planned.
-1. Enhance `QueryMetadataManager` with metadata refresh APIs that ingest `stateDirectory` snapshots and assignment events, matching `StreamsMetadataState#onChange` semantics.
-2. Implement a pluggable RPC layer (HTTP/gRPC) for remote fetches with retry/backoff policies, integrating with `InteractiveQueryService#get` and remote store lookups.
-3. Support standby awareness by tracking active vs. standby replicas and falling back to warm standbys when active hosts are unavailable.
+**Status:** ✅ Completed.
+1. Extended `QueryMetadataManager` with host-level indices, assignment refresh hooks, and a snapshot ingestion API so metadata reacts to cooperative rebalances and persisted state-directory views in parity with `StreamsMetadataState#onChange`.
+2. Delivered a pluggable HTTP RPC client with configurable retry/backoff and timeout controls and integrated it into `InteractiveQueryService#get` for remote key lookups.
+3. Added standby-aware routing that prioritises active replicas, fails over to warm standbys on remote errors, and exposes helper APIs for refreshing metadata snapshots.
 
 ### Step 5 – State Store Metrics & Observability (P1)
 **Status:** ⏳ Planned.
