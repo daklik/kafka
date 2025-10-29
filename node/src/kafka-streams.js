@@ -7,6 +7,7 @@ const { TaskManager } = require('./runtime/task-manager');
 const { StreamsConfig } = require('./config/streams-config');
 const { HandlerAction } = require('./errors');
 const { QueryMetadataManager, InteractiveQueryService } = require('./query');
+const { RecordContext } = require('./processor');
 
 const SKIP_RECORD = Symbol.for('kafka-streams-skip-record');
 
@@ -127,6 +128,7 @@ class KafkaStreams extends EventEmitter {
     const valueBuffer = message.value;
     const headers = message.headers ?? {};
     const timestamp = message.timestamp ? Number(message.timestamp) : Date.now();
+    const offset = message.offset != null ? Number(message.offset) : null;
 
     this._metrics.record('stream.records.consumed', 1, { streamId: stream.id, topic });
 
@@ -152,13 +154,16 @@ class KafkaStreams extends EventEmitter {
       return [];
     }
 
+    const recordContext = new RecordContext({ topic, partition, offset, timestamp, headers });
     const record = {
       topic,
       partition,
       headers,
       timestamp,
+      offset,
       key,
-      value
+      value,
+      recordContext
     };
 
     await this._bufferStreamJoins(stream, record, stores);
@@ -189,7 +194,7 @@ class KafkaStreams extends EventEmitter {
 
       switch (operation.type) {
         case 'map':
-          records = await Promise.all(records.map(async r => this._normalizeRecord(await operation.fn(r))));
+          records = await Promise.all(records.map(async r => this._normalizeRecord(await operation.fn(r), r)));
           break;
         case 'mapValues':
           records = await Promise.all(records.map(async r => ({ ...r, value: await operation.fn(r.value, r) })));
@@ -216,7 +221,7 @@ class KafkaStreams extends EventEmitter {
             if (!Array.isArray(produced)) {
               throw new Error('flatMap operation must return an array of records');
             }
-            return produced.map(item => this._normalizeRecord(item));
+            return produced.map(item => this._normalizeRecord(item, r));
           }))).flat();
           break;
         case 'flatMapValues':
@@ -300,20 +305,66 @@ class KafkaStreams extends EventEmitter {
     }
   }
 
-  _normalizeRecord(record) {
+  _normalizeRecord(record, sourceRecord = null) {
     if (!record || typeof record !== 'object') {
       throw new Error('map and flatMap operations must return an object with key/value pairs');
     }
     if (!('value' in record)) {
       throw new Error('Record must have a value property');
     }
+    const sourceContext = sourceRecord?.recordContext instanceof RecordContext ? sourceRecord.recordContext : null;
+    const providedContext = record.recordContext instanceof RecordContext ? record.recordContext : null;
+
+    const topic = record.topic ?? providedContext?.topic() ?? sourceContext?.topic() ?? sourceRecord?.topic ?? null;
+    const partition = record.partition ?? providedContext?.partition() ?? sourceContext?.partition() ?? sourceRecord?.partition ?? null;
+    const timestamp = record.timestamp != null
+      ? Number(record.timestamp)
+      : providedContext?.timestamp() ?? sourceContext?.timestamp() ?? sourceRecord?.timestamp ?? Date.now();
+    const offset = record.offset != null
+      ? Number(record.offset)
+      : providedContext?.offset() ?? sourceContext?.offset() ?? sourceRecord?.offset ?? null;
+
+    const resolvedHeaders = (() => {
+      if (record.headers) {
+        return { ...record.headers };
+      }
+      if (providedContext) {
+        return { ...providedContext.headers() };
+      }
+      if (sourceContext) {
+        return { ...sourceContext.headers() };
+      }
+      if (sourceRecord?.headers) {
+        return { ...sourceRecord.headers };
+      }
+      return {};
+    })();
+
+    const recordContext = providedContext ?? (sourceContext
+      ? sourceContext.withUpdates({
+        topic,
+        partition,
+        timestamp,
+        offset,
+        headers: resolvedHeaders
+      })
+      : new RecordContext({
+        topic,
+        partition,
+        timestamp,
+        offset,
+        headers: resolvedHeaders
+      }));
+
     return {
-      topic: record.topic,
-      partition: record.partition,
-      headers: record.headers ?? {},
-      timestamp: record.timestamp ?? Date.now(),
+      topic,
+      partition,
+      headers: resolvedHeaders,
+      timestamp,
+      offset,
       key: 'key' in record ? record.key : undefined,
-      value: record.value
+      value: record.value,
+      recordContext
     };
   }
 

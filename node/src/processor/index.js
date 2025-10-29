@@ -149,6 +149,13 @@ class ProcessorSupplier {
   }
 }
 
+const {
+  ForwardingDisabledException,
+  ProcessorContext,
+  RecordContext,
+  To
+} = require('./context');
+
 module.exports = {
   Processor,
   ProcessorSupplier,
@@ -156,5 +163,9 @@ module.exports = {
   ValueTransformer,
   callLifecycle,
   ensureProcessorLike,
-  isProcessorLike
+  isProcessorLike,
+  ProcessorContext,
+  RecordContext,
+  ForwardingDisabledException,
+  To
 };

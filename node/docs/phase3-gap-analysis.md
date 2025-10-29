@@ -26,11 +26,11 @@ Phase 3 builds on the DSL parity delivered in Phase 2 and focuses on porting the
 3. Add compatibility shims for legacy `ProcessorSupplier` signatures (`() => Processor`) and Node-friendly class-based processors.
 
 ### Step 2 – Implement Processor Context & Record Metadata (P0)
-**Status:** ⏳ Pending.
-1. Create `ProcessorContext` with APIs mirroring Java (`forward`, `commit`, `schedule`, `currentNode`, `recordContext`, `headers`).
-2. Introduce a `RecordContext` struct capturing topic, partition, offset, timestamp, and headers. Bind it to the runtime via task execution.
-3. Provide `To` helper for downstream routing (e.g., to named child, to all children) and enforce `ForwardingDisabledException` parity when forwarding is not allowed (e.g., during suppress emission).
-4. Wire context creation through `StreamsBuilder#addProcessor` and `Topology#build` so DSL processors and new custom processors share infrastructure.
+**Status:** ✅ Complete.
+1. Added a promise-friendly `ProcessorContext` that surfaces `forward`, `commit`, `schedule`, `currentNode`, `recordContext`, and `headers` accessors with forwarding guard rails.
+2. Introduced immutable `RecordContext` metadata (topic, partition, offset, timestamp, headers) and threaded it through the runtime message pipeline.
+3. Published a `To` routing helper and `ForwardingDisabledException` that mirror Java semantics for downstream targeting and suppression safety.
+4. Connected context propagation to the existing DSL runtime so future Processor API nodes can share forwarding and metadata infrastructure.
 
 ### Step 3 – Scheduling & Punctuation (P1)
 **Status:** ⏳ Pending.

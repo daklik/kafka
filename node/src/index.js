@@ -48,5 +48,9 @@ module.exports = {
   ProcessorSupplier: processor.ProcessorSupplier,
   Transformer: processor.Transformer,
   ValueTransformer: processor.ValueTransformer,
+  ProcessorContext: processor.ProcessorContext,
+  RecordContext: processor.RecordContext,
+  ForwardingDisabledException: processor.ForwardingDisabledException,
+  To: processor.To,
   ...state
 };
