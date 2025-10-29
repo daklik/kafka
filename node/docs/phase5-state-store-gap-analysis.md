@@ -30,10 +30,10 @@ Phase 5 focuses on delivering production-ready state stores and interactive quer
 > **Note:** Earlier drafts referenced a non-existent `@rocksdb-community/rocksdb` package. Because the [`rocksdb`](https://www.npmjs.com/package/rocksdb) bindings have since been deprecated, our primary adapter target is [`rocksdb-native`](https://www.npmjs.com/package/rocksdb-native); we will document API gaps, platform coverage, and build requirements we uncover. We will also investigate any other maintained RocksDB bindings that emerge while prototyping so we can fall back if `rocksdb-native` proves unsuitable.
 
 ### Step 2 – Changelogging & Restoration Hooks (P0)
-**Status:** ⏳ Planned.
-1. Update `state/store-manager.js` to manage changelog topics per store definition, wiring produce/consume handlers and restore listeners akin to `StoreChangelogReader` in Java.
-2. Persist and replay changelog batches by integrating with the Phase 4 `StreamThread#restoreTask` flow, guaranteeing offsets and flush order for persistent stores.
-3. Capture checkpoint metadata (e.g., last flushed offset) to support warm restarts and avoid duplicate replay.
+**Status:** ✅ Completed.
+1. Wrapped logging-enabled key-value stores with a change-logging adapter that routes mutations through `StateStoreManager`, binds stream-scoped producers from `KafkaStreams`, and serializes entries using configured serdes and headers.
+2. Integrated restoration flows so changelog batches hydrate underlying stores without re-emitting change-log records, emitting lifecycle metrics/events while ensuring flush order.
+3. Persisted per-store checkpoints after writes and restores to track last processed offsets and power warm restarts without duplicate replay.
 
 ### Step 3 – Window & Session Store Implementations (P1)
 **Status:** ⏳ Planned.

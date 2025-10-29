@@ -147,6 +147,7 @@ class KafkaStreams extends EventEmitter {
     });
     streamThread.bindConsumer(consumer);
     streamThread.bindProducer(producer);
+    this._stateStoreManager.bindChangelogProducer({ stream, producer });
     streamThread.on('error', error => this.emit('error', error));
     streamThread.on('commit', event => this.emit('commit', event));
     this._streamThreads.set(stream.id, streamThread);

@@ -2,6 +2,8 @@
 
 const EventEmitter = require('events');
 
+const { ChangeLoggingKeyValueStore } = require('../state/change-logging-key-value-store');
+
 function toNumber(value) {
   if (value == null) {
     return null;
@@ -30,6 +32,9 @@ class StateStoreManager extends EventEmitter {
     this._config = config ?? null;
     this._definitions = new Map();
     this._instances = new Map();
+    this._changelogMetadata = new Map();
+    this._changelogProducers = new Map();
+    this._checkpoints = new Map();
   }
 
   registerDefinition(stream, definition) {
@@ -193,7 +198,16 @@ class StateStoreManager extends EventEmitter {
       builderMetadata: definition.builderMetadata,
       definition
     };
-    const store = await definition.builder.build(context);
+    const storeInstance = await definition.builder.build(context);
+    const store = this._maybeWrapLoggingStore({ stream, definition, store: storeInstance });
+    await this._applyRestoreBatches({
+      stream,
+      definition,
+      store,
+      restoreBatches,
+      restoreOffsets
+    });
+
     this._storeInstance({
       stream,
       definition,
@@ -229,6 +243,14 @@ class StateStoreManager extends EventEmitter {
       });
       return this.getStore(stream.id, storeName);
     }
+
+    await this._applyRestoreBatches({
+      stream,
+      definition,
+      store: existing,
+      restoreBatches,
+      restoreOffsets
+    });
 
     this._emitRestoreLifecycle({
       stream,
@@ -282,6 +304,286 @@ class StateStoreManager extends EventEmitter {
       return;
     }
     this._instances.delete(streamId);
+  }
+
+  bindChangelogProducer({ stream, producer } = {}) {
+    if (!stream?.id || !producer) {
+      return;
+    }
+    this._changelogProducers.set(stream.id, producer);
+    const perStream = this._changelogMetadata.get(stream.id);
+    if (perStream) {
+      for (const entry of perStream.values()) {
+        entry.producer = producer;
+      }
+    }
+  }
+
+  async appendChangelogRecord({
+    streamId,
+    storeName,
+    key,
+    value,
+    tombstone = false,
+    context = null,
+    definition = null
+  } = {}) {
+    if (!streamId || !storeName) {
+      return;
+    }
+    const entry = this._ensureChangelogEntry(streamId, storeName, { definition });
+    if (!entry || !entry.topic || !entry.producer) {
+      return;
+    }
+
+    const message = this._serializeChangelogRecord({ entry, key, value, tombstone, context });
+    if (!message) {
+      return;
+    }
+
+    const payload = {
+      topic: entry.topic,
+      messages: [message]
+    };
+    if (entry.partition != null) {
+      payload.partition = entry.partition;
+    }
+
+    const result = await entry.producer.send(payload);
+    const metadata = Array.isArray(result) ? result[0] : result;
+    const partition = toNumber(metadata?.partition ?? entry.partition);
+    const offset = metadata?.offset ?? metadata?.baseOffset ?? metadata?.offsets?.[0];
+    if (offset != null) {
+      this._updateCheckpoint({ streamId, storeName, partition, offset });
+    }
+  }
+
+  async flushChangelog({ streamId, storeName } = {}) {
+    if (!streamId || !storeName) {
+      return;
+    }
+    const entry = this._ensureChangelogEntry(streamId, storeName);
+    if (!entry?.producer?.flush) {
+      return;
+    }
+    await entry.producer.flush();
+  }
+
+  getCheckpoint(streamId, storeName, partition = 0) {
+    const perStream = this._checkpoints.get(streamId);
+    if (!perStream) {
+      return null;
+    }
+    const perStore = perStream.get(storeName);
+    if (!perStore) {
+      return null;
+    }
+    return perStore.get(Number(partition)) ?? null;
+  }
+
+  _maybeWrapLoggingStore({ stream, definition, store }) {
+    if (!stream?.id || !definition?.name || !store) {
+      return store;
+    }
+    if (store instanceof ChangeLoggingKeyValueStore) {
+      return store;
+    }
+    if (!this._shouldLogStore({ definition, store })) {
+      return store;
+    }
+    this._ensureChangelogEntry(stream.id, definition.name, { definition });
+    return new ChangeLoggingKeyValueStore(store, {
+      manager: this,
+      streamId: stream.id,
+      storeName: definition.name,
+      definition
+    });
+  }
+
+  _shouldLogStore({ definition, store }) {
+    if (!store || !this._isKeyValueStore(store)) {
+      return false;
+    }
+    const loggingEnabled = store.loggingEnabled ?? definition?.builderMetadata?.loggingEnabled;
+    if (!loggingEnabled) {
+      return false;
+    }
+    const topic = definition?.builderMetadata?.changelog?.topic
+      ?? definition?.metadata?.changelogTopic
+      ?? store.changelogConfig?.topic;
+    if (!topic) {
+      return false;
+    }
+    return true;
+  }
+
+  _isKeyValueStore(store) {
+    return typeof store?.put === 'function' && typeof store?.delete === 'function';
+  }
+
+  _ensureChangelogEntry(streamId, storeName, { definition = null } = {}) {
+    if (!streamId || !storeName) {
+      return null;
+    }
+    let perStream = this._changelogMetadata.get(streamId);
+    if (!perStream) {
+      perStream = new Map();
+      this._changelogMetadata.set(streamId, perStream);
+    }
+    let entry = perStream.get(storeName);
+    const metadataSource = definition ?? this.getDefinition(streamId, storeName);
+    if (!entry) {
+      entry = {
+        topic: null,
+        partition: null,
+        keySerde: null,
+        valueSerde: null,
+        producer: this._changelogProducers.get(streamId) ?? null
+      };
+      perStream.set(storeName, entry);
+    }
+    if (metadataSource) {
+      entry.topic = entry.topic
+        ?? metadataSource.builderMetadata?.changelog?.topic
+        ?? metadataSource.metadata?.changelogTopic
+        ?? metadataSource.changelogTopic
+        ?? null;
+      entry.partition = entry.partition
+        ?? metadataSource.metadata?.changelogPartition
+        ?? null;
+      entry.keySerde = entry.keySerde ?? metadataSource.keySerde ?? null;
+      entry.valueSerde = entry.valueSerde ?? metadataSource.valueSerde ?? null;
+    }
+    if (!entry.producer && this._changelogProducers.has(streamId)) {
+      entry.producer = this._changelogProducers.get(streamId);
+    }
+    return entry;
+  }
+
+  _serializeChangelogRecord({ entry, key, value, tombstone, context }) {
+    const keyBuffer = this._encodeKey(key, entry?.keySerde);
+    const valueBuffer = tombstone ? null : this._encodeValue(value, entry?.valueSerde);
+    if (keyBuffer == null && valueBuffer == null && !tombstone) {
+      return null;
+    }
+    const headers = context?.recordContext?.()?.headers?.() ?? context?.headers ?? {};
+    const normalizedHeaders = headers && typeof headers === 'object'
+      ? Object.entries(headers).map(([headerKey, headerValue]) => ({
+        key: headerKey,
+        value: this._encodeBuffer(headerValue)
+      }))
+      : [];
+    return {
+      key: keyBuffer,
+      value: valueBuffer,
+      headers: normalizedHeaders
+    };
+  }
+
+  _encodeKey(key, serde) {
+    if (serde?.serialize) {
+      return serde.serialize(key);
+    }
+    return this._encodeBuffer(key);
+  }
+
+  _encodeValue(value, serde) {
+    if (serde?.serialize) {
+      return serde.serialize(value);
+    }
+    return this._encodeBuffer(value);
+  }
+
+  _encodeBuffer(value) {
+    if (value == null) {
+      return null;
+    }
+    if (Buffer.isBuffer(value)) {
+      return value;
+    }
+    if (typeof value === 'string') {
+      return Buffer.from(value);
+    }
+    if (typeof value === 'number') {
+      const buffer = Buffer.allocUnsafe(8);
+      buffer.writeDoubleBE(value, 0);
+      return buffer;
+    }
+    if (typeof value === 'boolean') {
+      return Buffer.from([value ? 1 : 0]);
+    }
+    try {
+      return Buffer.from(JSON.stringify(value));
+    } catch (err) {
+      return Buffer.from(String(value));
+    }
+  }
+
+  _updateCheckpoint({ streamId, storeName, partition, offset }) {
+    if (streamId == null || storeName == null || offset == null) {
+      return;
+    }
+    const numericPartition = Number(partition ?? 0);
+    let perStream = this._checkpoints.get(streamId);
+    if (!perStream) {
+      perStream = new Map();
+      this._checkpoints.set(streamId, perStream);
+    }
+    let perStore = perStream.get(storeName);
+    if (!perStore) {
+      perStore = new Map();
+      perStream.set(storeName, perStore);
+    }
+    perStore.set(numericPartition, typeof offset === 'number' ? offset : Number(offset));
+  }
+
+  async _applyRestoreBatches({ stream, definition, store, restoreBatches = [], restoreOffsets = {} }) {
+    const targetStore = store instanceof ChangeLoggingKeyValueStore ? store.inner : store;
+    if (!this._isKeyValueStore(targetStore) || !Array.isArray(restoreBatches) || !restoreBatches.length) {
+      if (restoreOffsets?.endingOffset != null) {
+        this._updateCheckpoint({
+          streamId: stream.id,
+          storeName: definition.name,
+          partition: restoreOffsets.partition,
+          offset: restoreOffsets.endingOffset
+        });
+      }
+      return;
+    }
+
+    for (const batch of restoreBatches) {
+      const records = Array.isArray(batch?.records) ? batch.records : [];
+      for (const record of records) {
+        if (!record) {
+          continue;
+        }
+        if (record.value === null || record.value === undefined) {
+          await targetStore.delete(record.key);
+        } else {
+          await targetStore.put(record.key, record.value);
+        }
+      }
+      if (typeof targetStore.flush === 'function') {
+        await targetStore.flush();
+      }
+      if (batch?.batchEndOffset != null) {
+        this._updateCheckpoint({
+          streamId: stream.id,
+          storeName: definition.name,
+          partition: batch.partition ?? restoreOffsets.partition,
+          offset: batch.batchEndOffset
+        });
+      }
+    }
+
+    if (restoreOffsets?.endingOffset != null) {
+      this._updateCheckpoint({
+        streamId: stream.id,
+        storeName: definition.name,
+        partition: restoreOffsets.partition,
+        offset: restoreOffsets.endingOffset
+      });
+    }
   }
 
   _storeInstance({ stream, definition, store, storeInstances = null, restoreBatches = [], restoreOffsets = {}, emitLifecycle = false }) {
