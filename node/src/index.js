@@ -4,8 +4,11 @@ const { StreamsBuilder } = require('./streams-builder');
 const { KafkaStreams } = require('./kafka-streams');
 const { Serde } = require('./serde');
 const state = require('./state');
-const { TaskManager } = require('./runtime/task-manager');
+const { TaskManager, TaskState } = require('./runtime/task-manager');
 const { StateStoreManager } = require('./runtime/state-store-manager');
+const { StreamThread } = require('./runtime/stream-thread');
+const { TransactionManager } = require('./runtime/transaction-manager');
+const assignment = require('./runtime/assignment-coordinator');
 const { Named } = require('./named');
 const { Materialized } = require('./materialized');
 const { StreamsConfig } = require('./config/streams-config');
@@ -32,13 +35,17 @@ module.exports = {
   ValueJoiner,
   KGroupedStream,
   TaskManager,
+  TaskState,
   StateStoreManager,
+  StreamThread,
+  TransactionManager,
   StreamsConfig,
   metrics,
   errors,
   query,
   windows,
   Suppressed,
+  assignment,
   BufferConfig: Suppressed.BufferConfig,
   JoinWindows: windows.JoinWindows,
   SlidingWindows: windows.SlidingWindows,
