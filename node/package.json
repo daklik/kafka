@@ -22,5 +22,13 @@
   },
   "devDependencies": {
     "eslint": "^8.57.0"
+  },
+  "peerDependencies": {
+    "rocksdb-native": ">=3.0.0"
+  },
+  "peerDependenciesMeta": {
+    "rocksdb-native": {
+      "optional": true
+    }
   }
 }

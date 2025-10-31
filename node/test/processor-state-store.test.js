@@ -108,3 +108,18 @@ test('ProcessorContext getStateStore returns null when store missing', () => {
 
   assert.equal(context.getStateStore('unknown'), null);
 });
+
+test('Stores.persistentKeyValueStore describes persistent metadata', () => {
+  const builder = Stores.persistentKeyValueStore('persistent', {
+    cachingEnabled: true,
+    cacheMaxBytes: 1024,
+    retentionMs: 60000
+  });
+
+  const description = builder.describe();
+  assert.equal(description.name, 'persistent');
+  assert.equal(description.persistent, true);
+  assert.equal(description.cachingEnabled, true);
+  assert.equal(description.cacheMaxBytes, 1024);
+  assert.equal(description.retentionMs, 60000);
+});

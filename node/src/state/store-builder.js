@@ -3,7 +3,18 @@
 const { ChangelogConfig } = require('./changelog-config');
 
 class StoreBuilder {
-  constructor({ name, supplier, type, loggingEnabled = true, cachingEnabled = false, changelogConfig = null }) {
+  constructor({
+    name,
+    supplier,
+    type,
+    loggingEnabled = true,
+    cachingEnabled = false,
+    changelogConfig = null,
+    persistent = false,
+    retentionMs = null,
+    cacheMaxBytes = null,
+    additionalMetadata = null
+  }) {
     if (!name) {
       throw new Error('StoreBuilder requires a store name');
     }
@@ -16,6 +27,10 @@ class StoreBuilder {
     this.loggingEnabled = loggingEnabled;
     this.cachingEnabled = cachingEnabled;
     this.changelogConfig = changelogConfig instanceof ChangelogConfig ? changelogConfig : (changelogConfig ? new ChangelogConfig(changelogConfig) : null);
+    this.persistent = Boolean(persistent);
+    this.retentionMs = retentionMs ?? null;
+    this.cacheMaxBytes = cacheMaxBytes ?? null;
+    this.additionalMetadata = additionalMetadata ?? null;
   }
 
   withCachingEnabled() {
@@ -30,26 +45,30 @@ class StoreBuilder {
     return new StoreBuilder({ ...this, changelogConfig: config instanceof ChangelogConfig ? config : new ChangelogConfig(config) });
   }
 
-  build(context) {
-    const store = this.supplier();
-    if (store && typeof store.then === 'function') {
-      return store.then(instance => {
-        instance.init?.(context);
-        return instance;
-      });
+  async build(context = {}) {
+    const storeOrPromise = this.supplier(context);
+    const store = await storeOrPromise;
+    if (store && typeof store.init === 'function') {
+      await store.init(context);
     }
-    store.init?.(context);
     return store;
   }
 
   describe() {
-    return {
+    const metadata = {
       name: this.name,
       type: this.type,
       loggingEnabled: this.loggingEnabled,
       cachingEnabled: this.cachingEnabled,
-      changelog: this.changelogConfig ? this.changelogConfig.toKafkaConfig(this.name) : null
+      changelog: this.changelogConfig ? this.changelogConfig.toKafkaConfig(this.name) : null,
+      persistent: this.persistent,
+      retentionMs: this.retentionMs,
+      cacheMaxBytes: this.cacheMaxBytes
     };
+    if (this.additionalMetadata) {
+      return { ...metadata, ...this.additionalMetadata };
+    }
+    return metadata;
   }
 }
 

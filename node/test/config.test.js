@@ -2,6 +2,8 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
+const os = require('node:os');
 
 const { StreamsConfig, metrics, errors } = require('../src');
 
@@ -66,4 +68,31 @@ test('StreamsConfig wires metrics reporters and exception handlers', async () =>
 
 test('StreamsConfig rejects unsupported processing guarantee values', () => {
   assert.throws(() => new StreamsConfig({ applicationId: 'invalid', processingGuarantee: 'unknown' }));
+});
+
+test('StreamsConfig resolves state directories and cache buffering limits', () => {
+  const config = new StreamsConfig({ applicationId: 'stateful-app' });
+  const baseDir = config.getStateDirectory();
+  assert.ok(baseDir.includes('kafka-streams-state'));
+  const resolved = config.resolveStateStoreDirectory({ stream: { id: 'stream-1' }, storeName: 'store-A' });
+  assert.equal(resolved, path.join(baseDir, 'stream-1', 'store-A'));
+  assert.equal(config.getCacheMaxBytesBuffering(), 10 * 1024 * 1024);
+});
+
+test('StreamsConfig accepts custom state directory resolvers and cache overrides', () => {
+  const customBase = path.join(os.tmpdir(), 'custom-state-dir');
+  const resolver = ({ storeName }) => path.join(customBase, 'scoped', storeName);
+  const config = new StreamsConfig({
+    applicationId: 'custom-app',
+    stateDir: customBase,
+    resolveStateStoreDirectory: resolver,
+    cacheMaxBytesBuffering: 2048
+  });
+
+  assert.equal(config.getStateDirectory(), path.resolve(customBase));
+  assert.equal(
+    config.resolveStateStoreDirectory({ storeName: 'store-B', stream: { id: 'ignored' } }),
+    path.join(customBase, 'scoped', 'store-B')
+  );
+  assert.equal(config.getCacheMaxBytesBuffering(), 2048);
 });

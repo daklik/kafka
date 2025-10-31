@@ -1,5 +1,8 @@
 'use strict';
 
+const path = require('node:path');
+const os = require('node:os');
+
 const { StreamsMetrics, NoopReporter } = require('../metrics');
 const { createExceptionHandler, LogAndFailExceptionHandler } = require('../errors');
 const { HostInfo } = require('../query/host-info');
@@ -64,6 +67,34 @@ function buildErrorHandlers(raw = {}) {
   };
 }
 
+function resolveStateDirectory({ applicationId, stateDir, stateDirectory }) {
+  const base = stateDir ?? stateDirectory;
+  if (base) {
+    return path.resolve(base);
+  }
+  return path.join(os.tmpdir(), 'kafka-streams-state', applicationId);
+}
+
+function resolveCacheMaxBytes(raw = {}) {
+  const candidates = [
+    raw.stateStoreCacheMaxBytes,
+    raw.statestoreCacheMaxBytes,
+    raw['statestore.cache.max.bytes'],
+    raw.cacheMaxBytesBuffering,
+    raw['cache.max.bytes.buffering']
+  ];
+  for (const candidate of candidates) {
+    if (candidate == null) {
+      continue;
+    }
+    const numeric = Number(candidate);
+    if (!Number.isNaN(numeric) && numeric >= 0) {
+      return numeric;
+    }
+  }
+  return 10 * 1024 * 1024;
+}
+
 class StreamsConfig {
   constructor(raw = {}) {
     if (raw instanceof StreamsConfig) {
@@ -85,6 +116,16 @@ class StreamsConfig {
     this.commitInterval = raw.commitInterval ?? 5000;
 
     this.groupIdPrefix = raw.groupIdPrefix ?? raw.applicationId;
+
+    this.stateDirectory = resolveStateDirectory({
+      applicationId: this.applicationId,
+      stateDir: raw.stateDir ?? raw.stateDirectory,
+      stateDirectory: raw.stateDirectory
+    });
+    this.stateDirectoryResolver = typeof raw.resolveStateStoreDirectory === 'function'
+      ? raw.resolveStateStoreDirectory
+      : null;
+    this.cacheMaxBytesBuffering = resolveCacheMaxBytes(raw);
 
     this.clientConfig = {
       ...(raw.client ?? {}),
@@ -189,6 +230,27 @@ class StreamsConfig {
       return `${this.applicationId}-global-${topic}`;
     }
     return `${this.groupIdPrefix}-${stream.id}`;
+  }
+
+  getStateDirectory() {
+    return this.stateDirectory;
+  }
+
+  resolveStateStoreDirectory({ stream, storeName } = {}) {
+    if (this.stateDirectoryResolver) {
+      return this.stateDirectoryResolver({
+        stream,
+        storeName,
+        config: this
+      });
+    }
+    const streamComponent = stream?.id ?? 'global';
+    const storeComponent = storeName ?? (stream?.materialized?.storeName ?? 'store');
+    return path.join(this.stateDirectory, streamComponent, storeComponent);
+  }
+
+  getCacheMaxBytesBuffering() {
+    return this.cacheMaxBytesBuffering;
   }
 
   _factoryOptions({ stream, kafka, groupId }) {
